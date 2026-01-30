@@ -20,7 +20,7 @@ A Python CLI tool to query [OpenEvidence](https://www.openevidence.com) for evid
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/openevidence-cli.git
+git clone https://github.com/anthonygricco/openevidence-cli.git
 cd openevidence-cli
 
 # The tool auto-creates a virtual environment on first run
