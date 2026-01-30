@@ -18,6 +18,8 @@ A Python CLI tool to query [OpenEvidence](https://www.openevidence.com) for evid
 
 ## Installation
 
+### Standalone CLI
+
 ```bash
 # Clone the repository
 git clone https://github.com/anthonygricco/openevidence-cli.git
@@ -26,6 +28,23 @@ cd openevidence-cli
 # The tool auto-creates a virtual environment on first run
 python3 scripts/run.py --help
 ```
+
+### As a Claude Code Skill
+
+Install as a skill to use `/oe` commands directly in Claude Code:
+
+```bash
+# Clone to your skills directory
+git clone https://github.com/anthonygricco/openevidence-cli.git ~/.claude/skills/openevidence
+
+# Claude Code will auto-detect the SKILL.md file
+# Use: /oe What is the evidence for...
+```
+
+The skill is triggered by:
+- `/oe` followed by a medical question
+- Asking about "OpenEvidence" or "clinical evidence"
+- Requesting "guideline recommendations"
 
 ## Quick Start
 
@@ -169,4 +188,10 @@ MIT License - see [LICENSE](LICENSE)
 
 ## Disclaimer
 
-This tool is for educational and research purposes. Always verify medical information with qualified healthcare professionals. The authors are not responsible for any medical decisions made based on information obtained through this tool.
+**Account Eligibility:** OpenEvidence accounts are only available to verified healthcare practitioners. The service supports multiple authentication methods including Apple Sign-In, Google Sign-In, and institutional credentials. You must have a valid OpenEvidence account to use this tool.
+
+**Terms of Service Notice:** This tool uses browser automation to interact with OpenEvidence. This method of access may violate OpenEvidence's Terms of Service. The authors of this tool are not affiliated with OpenEvidence, and OpenEvidence has not authorized or endorsed this tool. Use at your own risk and discretion.
+
+**Medical Disclaimer:** This tool is for educational and research purposes only. Always verify medical information with qualified healthcare professionals. The authors are not responsible for any medical decisions made based on information obtained through this tool.
+
+**Liability:** The authors provide this tool "as is" without warranty. You assume all responsibility for your use of this tool, including any consequences arising from potential Terms of Service violations.
