@@ -1,0 +1,2 @@
+# Browser automation (Playwright fork with stealth features)
+patchright>=0.0.9
