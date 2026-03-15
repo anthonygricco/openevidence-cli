@@ -103,15 +103,25 @@ def dismiss_popups(page, quick: bool = False) -> None:
 
 
 def is_loading(page) -> bool:
-    """Check if page is showing loading indicator."""
-    for selector in LOADING_SELECTORS:
-        try:
-            element = page.query_selector(selector)
-            if element and element.is_visible():
-                return True
-        except Exception:
-            continue
-    return False
+    """Check if page is showing loading indicator using fast JS evaluation."""
+    try:
+        return page.evaluate('''() => {
+            // Check for common loading/thinking indicators via JS (faster than selector iteration)
+            const selectors = [
+                '[data-testid="loading"]',
+                '.MuiCircularProgress-root',
+                '[class*="loading"]',
+                '[class*="typing"]',
+                '[class*="thinking"]',
+            ];
+            for (const sel of selectors) {
+                const el = document.querySelector(sel);
+                if (el && el.offsetParent !== null) return true;
+            }
+            return false;
+        }''')
+    except Exception:
+        return False
 
 
 def clean_response_text(text: str) -> str:
@@ -156,7 +166,6 @@ def response_looks_complete(text: str) -> bool:
     if not text or len(text) < 300:
         return False
 
-    # Strong signals of completeness
     import re
     has_citations = bool(re.search(r'\[\d+\]', text))
     has_references = any(marker in text.lower() for marker in [
@@ -165,15 +174,45 @@ def response_looks_complete(text: str) -> bool:
     ])
     has_multiple_paragraphs = text.count('\n\n') >= 2
 
-    # Consider complete if it has citations or references AND multiple paragraphs
     if (has_citations or has_references) and has_multiple_paragraphs:
         return True
 
-    # Also consider complete if it's long enough (>1000 chars with paragraphs)
     if len(text) > 1000 and has_multiple_paragraphs:
         return True
 
     return False
+
+
+def is_response_streaming(page) -> bool:
+    """
+    Check if OE is still actively streaming/generating the response.
+
+    Uses JS to detect:
+    - Cursor/caret blinking animation in the response area
+    - Streaming indicator elements
+    - Text content still growing (checked by caller via text comparison)
+    """
+    try:
+        return page.evaluate('''() => {
+            // Check for streaming cursor/caret indicators
+            const article = document.querySelector('article');
+            if (!article) return false;
+
+            // Look for animated cursor elements (common in streaming UIs)
+            const cursor = article.querySelector('[class*="cursor"], [class*="caret"], [class*="blink"]');
+            if (cursor && cursor.offsetParent !== null) return true;
+
+            // Check for any CSS animation on last element (streaming indicator)
+            const lastChild = article.lastElementChild;
+            if (lastChild) {
+                const style = window.getComputedStyle(lastChild);
+                if (style.animationName && style.animationName !== 'none') return true;
+            }
+
+            return false;
+        }''')
+    except Exception:
+        return False
 
 
 def get_response_text(page, debug: bool = False, min_chars: int = 100) -> str | None:
@@ -481,6 +520,13 @@ def ask_openevidence(
                 else:
                     # Non-streaming: wait for stability
                     if text == last_text:
+                        # Check if OE is still actively streaming
+                        if is_response_streaming(page):
+                            # Still streaming — don't increment stable count
+                            if debug:
+                                print(f"    DEBUG: Text stable but OE still streaming ({len(text)} chars)")
+                            time.sleep(poll_interval)
+                            continue
                         stable_count += 1
                         # Accept if stable AND (looks complete OR enough stable checks)
                         if stable_count >= mode['stable_checks']:
