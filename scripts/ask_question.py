@@ -190,7 +190,8 @@ def is_response_streaming(page) -> bool:
     Uses JS to detect:
     - Cursor/caret blinking animation in the response area
     - Streaming indicator elements
-    - Text content still growing (checked by caller via text comparison)
+    - Send button disabled (still generating)
+    - Stop/cancel button visible (still generating)
     """
     try:
         return page.evaluate('''() => {
@@ -208,6 +209,14 @@ def is_response_streaming(page) -> bool:
                 const style = window.getComputedStyle(lastChild);
                 if (style.animationName && style.animationName !== 'none') return true;
             }
+
+            // Check for stop/cancel button (visible during generation)
+            const stopBtn = document.querySelector('button[aria-label="Stop"], button:has(svg[data-testid="StopIcon"]), [class*="stop"]');
+            if (stopBtn && stopBtn.offsetParent !== null) return true;
+
+            // Check if send button is disabled (still generating)
+            const sendBtn = document.querySelector('button[type="submit"], button[aria-label="Send"]');
+            if (sendBtn && sendBtn.disabled) return true;
 
             return false;
         }''')
@@ -390,6 +399,25 @@ def ask_openevidence(
     playwright = None
     context = None
 
+    # Shared state for API interception
+    api_done = {'done': False, 'api_text': None}
+
+    def on_response(response):
+        """Monitor network responses to detect when OE's API finishes streaming."""
+        url = response.url
+        # Look for OE's chat/completion API endpoints
+        if any(pattern in url for pattern in ['/api/chat', '/api/completion', '/api/ask', '/api/query', 'openai', 'anthropic', '/chat']):
+            try:
+                status = response.status
+                content_type = response.headers.get('content-type', '')
+                if status == 200 and 'text/event-stream' not in content_type:
+                    # Non-streaming JSON response — API call is complete
+                    if debug:
+                        print(f"    DEBUG: API response detected: {url[:80]} ({status})")
+                    api_done['done'] = True
+            except Exception:
+                pass
+
     try:
         playwright = sync_playwright().start()
         context = BrowserFactory.launch_persistent_context(
@@ -399,6 +427,9 @@ def ask_openevidence(
         timings['browser_launch'] = time.time() - phase_start
 
         page = context.new_page()
+
+        # Set up API interception to detect completion faster
+        page.on("response", on_response)
 
         # Navigate to OpenEvidence
         phase_start = time.time()
@@ -543,8 +574,15 @@ def ask_openevidence(
                 else:
                     # Non-streaming: wait for stability
                     if text == last_text:
+                        # If API signaled done, accept immediately if text looks complete
+                        if api_done['done'] and response_looks_complete(text):
+                            if debug:
+                                print(f"    DEBUG: API done + complete response ({len(text)} chars)")
+                            answer = text
+                            break
+
                         # Check if OE is still actively streaming
-                        if is_response_streaming(page):
+                        if is_response_streaming(page) and not api_done['done']:
                             # Still streaming — don't increment stable count
                             if debug:
                                 print(f"    DEBUG: Text stable but OE still streaming ({len(text)} chars)")
