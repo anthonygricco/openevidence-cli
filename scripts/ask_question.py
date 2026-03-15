@@ -30,6 +30,7 @@ from config import (
     QUERY_INPUT_SELECTORS,
     QUERY_TIMEOUT,
     RESPONSE_NOISE_PATTERNS,
+    STATE_JSON,
     SUBMIT_BUTTON_SELECTORS,
     TURBO_MODE,
 )
@@ -97,6 +98,216 @@ def save_to_cache(question: str, result: dict) -> None:
             }, f, indent=2)
     except OSError:
         pass
+
+
+API_TEMPLATE_FILE = DATA_DIR / "api_template.json"
+
+
+def ask_via_api(
+    question: str,
+    progressive: bool = False,
+    debug: bool = False,
+    timeout: int = 120,
+    no_cache: bool = False,
+    cache_ttl: int = 86400,
+) -> dict | None:
+    """
+    Ask OpenEvidence via direct API, bypassing browser entirely.
+    Requires api_template.json from a previous browser-mode run.
+    Falls back gracefully if template is missing or auth fails.
+    """
+    import urllib.request
+    import urllib.error
+
+    # Check cache first
+    if not no_cache:
+        cached = get_cached_response(question, cache_ttl)
+        if cached:
+            if progressive:
+                print("[FINAL]", flush=True)
+                print(cached.get('answer', ''), flush=True)
+                print("[/FINAL]", flush=True)
+            else:
+                print(f"[CACHED] Returning cached response ({len(cached.get('answer', ''))} chars)")
+            cached['timings'] = {'cache_hit': 0.0}
+            return cached
+
+    # Load API template (captured from a previous browser run)
+    if not API_TEMPLATE_FILE.exists():
+        if debug:
+            print("  No API template found. Run a browser query first to capture API format.")
+        return None
+
+    try:
+        with open(API_TEMPLATE_FILE) as f:
+            template = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    # Load cookies from browser state
+    if not STATE_JSON.exists():
+        if debug:
+            print("  No browser state found. Run auth first.")
+        return None
+
+    try:
+        with open(STATE_JSON) as f:
+            state = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    cookies = state.get('cookies', [])
+    cookie_str = '; '.join(
+        f"{c['name']}={c['value']}"
+        for c in cookies
+        if 'openevidence.com' in c.get('domain', '')
+    )
+    if not cookie_str:
+        if debug:
+            print("  No OpenEvidence cookies found in state.")
+        return None
+
+    timings = {}
+    phase_start = time.time()
+
+    # Build POST body from template
+    body = template.get('body_template', {}).copy()
+    question_field = template.get('question_field', 'question')
+    body[question_field] = question
+
+    # Build headers
+    headers = {}
+    for k, v in template.get('headers', {}).items():
+        if k.lower() not in ('cookie', 'host', 'content-length'):
+            headers[k] = v
+    headers['Cookie'] = cookie_str
+    headers.setdefault('Content-Type', 'application/json')
+    headers.setdefault('Origin', 'https://www.openevidence.com')
+    headers.setdefault('Referer', 'https://www.openevidence.com/')
+    headers.setdefault('User-Agent', (
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/131.0.0.0 Safari/537.36'
+    ))
+
+    api_url = template.get('url', 'https://www.openevidence.com/api/article')
+    print(f"[API] Asking: {question[:80]}{'...' if len(question) > 80 else ''}")
+
+    # POST /api/article to create question
+    try:
+        post_data = json.dumps(body).encode('utf-8')
+        req = urllib.request.Request(api_url, data=post_data, headers=headers, method='POST')
+        resp = urllib.request.urlopen(req, timeout=30)
+
+        if resp.status != 201:
+            if debug:
+                print(f"  API POST returned {resp.status}, expected 201")
+            return None
+
+        result_data = json.loads(resp.read())
+        article_id = result_data.get('id') or result_data.get('uuid') or result_data.get('articleId')
+
+        if not article_id:
+            if debug:
+                print(f"  No article ID in POST response: {list(result_data.keys())}")
+            return None
+
+        timings['api_post'] = time.time() - phase_start
+        if debug:
+            print(f"  Article created: {article_id}")
+
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as e:
+        if debug:
+            print(f"  API POST failed: {e}")
+        return None
+
+    # Poll GET /api/article/<uuid> for response
+    phase_start = time.time()
+    poll_url = f"https://www.openevidence.com/api/article/{article_id}"
+    deadline = time.time() + timeout
+    poll_start = time.time()
+
+    # Progressive state
+    prog_last_time = 0.0
+    prog_last_len = 0
+    prog_first = False
+
+    print("  Polling for response...")
+    answer = None
+
+    while time.time() < deadline:
+        try:
+            poll_req = urllib.request.Request(poll_url, headers={
+                'Cookie': cookie_str,
+                'User-Agent': headers.get('User-Agent', ''),
+                'Accept': 'application/json',
+            })
+            resp = urllib.request.urlopen(poll_req, timeout=15)
+            data = json.loads(resp.read())
+
+            status = data.get('status') or data.get('state')
+            content = (
+                data.get('content') or data.get('answer')
+                or data.get('response') or data.get('body') or ''
+            )
+
+            elapsed = time.time() - poll_start
+
+            # Progressive: emit partial results at intervals
+            if progressive and isinstance(content, str) and len(content) > 200:
+                should_emit = False
+                if not prog_first and elapsed >= 8:
+                    should_emit = True
+                    prog_first = True
+                elif prog_first:
+                    if elapsed - prog_last_time >= 15 and len(content) - prog_last_len > 300:
+                        should_emit = True
+                if should_emit:
+                    prog_last_time = elapsed
+                    prog_last_len = len(content)
+                    print("[PARTIAL]", flush=True)
+                    print(content, flush=True)
+                    print("[/PARTIAL]", flush=True)
+
+            if status in ('complete', 'completed', 'done', 'finished', 'success'):
+                if isinstance(content, str) and len(content) > 200:
+                    answer = content
+                    break
+                elif debug:
+                    print(f"  Status={status} but content short ({len(content) if content else 0} chars)")
+
+            if debug and content:
+                print(f"  Poll: status={status}, {len(content)} chars, {elapsed:.0f}s")
+
+        except Exception as e:
+            if debug:
+                print(f"  Poll error: {e}")
+
+        time.sleep(0.5)
+
+    if answer:
+        timings['response_wait'] = time.time() - phase_start
+        print(f"  Got response ({len(answer)} chars)")
+
+        if progressive:
+            print("[FINAL]", flush=True)
+            print(answer, flush=True)
+            print("[/FINAL]", flush=True)
+
+        result = {
+            'answer': answer,
+            'images': [],
+            'screenshot': None,
+            'timings': timings,
+        }
+
+        if not no_cache:
+            save_to_cache(question, result)
+
+        return result
+    else:
+        print("  No response received via API")
+        return None
 
 
 def find_element(page, selectors: list[str], timeout: int = ELEMENT_TIMEOUT):
@@ -549,6 +760,36 @@ def ask_openevidence(
 
         page = context.new_page()
 
+        # Capture API request template for future --api mode
+        def on_request(request):
+            if ('/api/article' in request.url and request.method == 'POST'
+                    and '/ct' not in request.url and request.post_data):
+                try:
+                    body = json.loads(request.post_data)
+                    # Identify which field holds the question
+                    q_field = None
+                    for key, value in body.items():
+                        if isinstance(value, str) and len(value) > 20 and question[:20].lower() in value.lower():
+                            q_field = key
+                            break
+                    template = {
+                        'url': request.url,
+                        'headers': {
+                            k: v for k, v in request.headers.items()
+                            if k.lower() not in ('cookie', 'host', 'content-length')
+                        },
+                        'body_template': {k: v for k, v in body.items() if k != q_field},
+                        'question_field': q_field or 'question',
+                    }
+                    with open(API_TEMPLATE_FILE, 'w') as f:
+                        json.dump(template, f, indent=2)
+                    if debug:
+                        print(f"    DEBUG: Captured API template (question_field={q_field})")
+                except Exception:
+                    pass
+
+        page.on("request", on_request)
+
         # Set up API interception to detect completion faster
         page.on("response", on_response)
 
@@ -904,6 +1145,11 @@ def main():
         default=86400,
         help="Cache time-to-live in seconds (default: 86400 = 24h)",
     )
+    parser.add_argument(
+        "--api",
+        action="store_true",
+        help="Use direct API mode (no browser). Requires a prior browser run to capture API template.",
+    )
 
     args = parser.parse_args()
 
@@ -911,20 +1157,36 @@ def main():
 
     start_time = time.time()
 
-    result = ask_openevidence(
-        question=args.question,
-        headless=not args.show_browser,
-        debug=args.debug,
-        save_images=args.save_images,
-        output_dir=output_dir,
-        fast=args.fast,
-        turbo=args.turbo,
-        stream=args.stream,
-        progressive=args.progressive,
-        benchmark=args.benchmark,
-        no_cache=args.no_cache,
-        cache_ttl=args.cache_ttl,
-    )
+    result = None
+
+    # Try API mode first if requested
+    if args.api:
+        result = ask_via_api(
+            question=args.question,
+            progressive=args.progressive,
+            debug=args.debug,
+            no_cache=args.no_cache,
+            cache_ttl=args.cache_ttl,
+        )
+        if not result:
+            print("  API mode failed, falling back to browser...")
+
+    # Fall back to browser mode
+    if not result:
+        result = ask_openevidence(
+            question=args.question,
+            headless=not args.show_browser,
+            debug=args.debug,
+            save_images=args.save_images,
+            output_dir=output_dir,
+            fast=args.fast,
+            turbo=args.turbo,
+            stream=args.stream,
+            progressive=args.progressive,
+            benchmark=args.benchmark,
+            no_cache=args.no_cache,
+            cache_ttl=args.cache_ttl,
+        )
 
     elapsed = time.time() - start_time
 
