@@ -28,7 +28,6 @@ from config import (
     NORMAL_MODE,
     PAGE_LOAD_TIMEOUT,
     QUERY_INPUT_SELECTORS,
-    QUERY_TIMEOUT,
     RESPONSE_NOISE_PATTERNS,
     STATE_JSON,
     SUBMIT_BUTTON_SELECTORS,
@@ -633,6 +632,7 @@ def ask_openevidence(
     benchmark: bool = False,
     no_cache: bool = False,
     cache_ttl: int = 86400,
+    timeout: int = 120,
 ) -> dict | None:
     """
     Ask a question to OpenEvidence.
@@ -650,6 +650,7 @@ def ask_openevidence(
         benchmark: Collect and return phase timing data
         no_cache: Bypass cache
         cache_ttl: Cache time-to-live in seconds (default 24h)
+        timeout: Response timeout in seconds (default 120)
 
     Returns:
         Dict with 'answer', 'images', 'screenshot' keys, or None on failure
@@ -872,7 +873,7 @@ def ask_openevidence(
         stable_count = 0
         last_text = None
         printed_len = 0  # For streaming: track how much we've printed
-        deadline = time.time() + QUERY_TIMEOUT / 1000
+        deadline = time.time() + timeout
         submit_time = time.time()
 
         base_poll_interval = mode.get('poll_interval', 1.0)
@@ -1160,6 +1161,12 @@ def main():
         default="text",
         help="Output format: text (default), json, or markdown",
     )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=120,
+        help="Response timeout in seconds (default: 120)",
+    )
 
     args = parser.parse_args()
 
@@ -1190,7 +1197,7 @@ def main():
 
             r = None
             if args.api:
-                r = ask_via_api(question=q, debug=args.debug, no_cache=args.no_cache, cache_ttl=args.cache_ttl)
+                r = ask_via_api(question=q, debug=args.debug, timeout=args.timeout, no_cache=args.no_cache, cache_ttl=args.cache_ttl)
                 if not r:
                     print("  API failed, trying browser...")
 
@@ -1198,6 +1205,7 @@ def main():
                 r = ask_openevidence(
                     question=q, headless=not args.show_browser, debug=args.debug,
                     fast=args.fast, turbo=args.turbo, no_cache=args.no_cache, cache_ttl=args.cache_ttl,
+                    timeout=args.timeout,
                 )
 
             if r:
@@ -1233,6 +1241,7 @@ def main():
             question=args.question,
             progressive=args.progressive,
             debug=args.debug,
+            timeout=args.timeout,
             no_cache=args.no_cache,
             cache_ttl=args.cache_ttl,
         )
@@ -1254,6 +1263,7 @@ def main():
             benchmark=args.benchmark,
             no_cache=args.no_cache,
             cache_ttl=args.cache_ttl,
+            timeout=args.timeout,
         )
 
     elapsed = time.time() - start_time
