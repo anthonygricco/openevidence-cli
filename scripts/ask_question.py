@@ -8,6 +8,8 @@ Ask medical questions and get evidence-based answers.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import sys
 import time
 from pathlib import Path
@@ -33,6 +35,68 @@ from config import (
 )
 from browser_utils import BrowserFactory, StealthUtils
 from auth_manager import AuthManager
+
+
+CACHE_DIR = DATA_DIR / "cache"
+
+
+def get_cache_key(question: str) -> str:
+    """Generate a cache key from the question text."""
+    normalized = question.strip().lower()
+    return hashlib.sha256(normalized.encode()).hexdigest()[:16]
+
+
+def get_cached_response(question: str, cache_ttl: int = 86400) -> dict | None:
+    """
+    Check cache for a previous response to this question.
+
+    Args:
+        question: The question text
+        cache_ttl: Cache time-to-live in seconds (default 24 hours)
+
+    Returns:
+        Cached result dict or None if not cached/expired
+    """
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    key = get_cache_key(question)
+    cache_file = CACHE_DIR / f"{key}.json"
+
+    if not cache_file.exists():
+        return None
+
+    try:
+        with open(cache_file, 'r') as f:
+            cached = json.load(f)
+
+        # Check TTL
+        cached_time = cached.get('timestamp', 0)
+        if time.time() - cached_time > cache_ttl:
+            cache_file.unlink()
+            return None
+
+        return cached.get('result')
+    except (json.JSONDecodeError, KeyError, OSError):
+        return None
+
+
+def save_to_cache(question: str, result: dict) -> None:
+    """Save a response to the cache."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    key = get_cache_key(question)
+    cache_file = CACHE_DIR / f"{key}.json"
+
+    # Don't cache timings (they're per-run)
+    cache_result = {k: v for k, v in result.items() if k != 'timings'}
+
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump({
+                'question': question,
+                'timestamp': time.time(),
+                'result': cache_result,
+            }, f, indent=2)
+    except OSError:
+        pass
 
 
 def find_element(page, selectors: list[str], timeout: int = ELEMENT_TIMEOUT):
@@ -354,7 +418,10 @@ def ask_openevidence(
     fast: bool = False,
     turbo: bool = False,
     stream: bool = False,
+    progressive: bool = False,
     benchmark: bool = False,
+    no_cache: bool = False,
+    cache_ttl: int = 86400,
 ) -> dict | None:
     """
     Ask a question to OpenEvidence.
@@ -368,11 +435,27 @@ def ask_openevidence(
         fast: Use fast mode (reduced delays, direct input)
         turbo: Use turbo mode (maximum speed, may be less reliable)
         stream: Stream response text as it appears
+        progressive: Emit [PARTIAL]/[FINAL] delimited output at intervals
         benchmark: Collect and return phase timing data
+        no_cache: Bypass cache
+        cache_ttl: Cache time-to-live in seconds (default 24h)
 
     Returns:
         Dict with 'answer', 'images', 'screenshot' keys, or None on failure
     """
+    # Check cache first (unless bypassed)
+    if not no_cache:
+        cached = get_cached_response(question, cache_ttl)
+        if cached:
+            if progressive:
+                print("[FINAL]", flush=True)
+                print(cached.get('answer', ''), flush=True)
+                print("[/FINAL]", flush=True)
+            else:
+                print(f"[CACHED] Returning cached response ({len(cached.get('answer', ''))} chars)")
+            cached['timings'] = {'cache_hit': 0.0}
+            return cached
+
     auth = AuthManager()
 
     if not auth.is_authenticated():
@@ -539,6 +622,8 @@ def ask_openevidence(
             print("=" * 60)
             print("OPENEVIDENCE RESPONSE")
             print("=" * 60 + "\n")
+        elif progressive:
+            print("  Waiting for response (progressive output)...")
         else:
             print("  Waiting for response...")
 
@@ -554,9 +639,15 @@ def ask_openevidence(
         min_chars = mode.get('min_response_chars', 300)
         min_wait = mode.get('min_wait_after_submit', 3.0)
         first_text_seen = False
-        # Use faster polling for streaming
+        # Progressive output state
+        progressive_last_emit_time = 0.0
+        progressive_last_emit_len = 0
+        progressive_first_emitted = False
+        # Use faster polling for streaming/progressive
         if stream:
             poll_interval = 0.2
+        elif progressive:
+            poll_interval = 0.3
 
         while time.time() < deadline:
             elapsed = time.time() - submit_time
@@ -576,8 +667,26 @@ def ask_openevidence(
                 # Adaptive polling: once we see text, slow down slightly
                 if not first_text_seen:
                     first_text_seen = True
-                    if not stream:
+                    if not stream and not progressive:
                         poll_interval = base_poll_interval * 1.5  # Text is flowing, poll less aggressively
+
+                # Progressive: emit partial results at intervals
+                if progressive and len(text) > 200:
+                    should_emit = False
+                    if not progressive_first_emitted and elapsed >= 8:
+                        should_emit = True
+                        progressive_first_emitted = True
+                    elif progressive_first_emitted:
+                        time_since = elapsed - progressive_last_emit_time
+                        growth = len(text) - progressive_last_emit_len
+                        if time_since >= 15 and growth > 300:
+                            should_emit = True
+                    if should_emit:
+                        progressive_last_emit_time = elapsed
+                        progressive_last_emit_len = len(text)
+                        print("[PARTIAL]", flush=True)
+                        print(text, flush=True)
+                        print("[/PARTIAL]", flush=True)
 
                 # Don't accept responses before minimum wait time
                 if elapsed < min_wait:
@@ -678,12 +787,22 @@ def ask_openevidence(
             timings['response_wait'] = time.time() - phase_start
             print(f"  Got response ({len(answer)} chars)")
 
+            # Progressive: emit final result
+            if progressive:
+                print("[FINAL]", flush=True)
+                print(answer, flush=True)
+                print("[/FINAL]", flush=True)
+
             result = {
                 'answer': answer,
                 'images': [],
                 'screenshot': None,
                 'timings': timings,
             }
+
+            # Save to cache
+            if not no_cache:
+                save_to_cache(question, result)
 
             # Capture images if requested
             if save_images:
@@ -765,9 +884,25 @@ def main():
         help="Stream response as it appears (shows text incrementally)",
     )
     parser.add_argument(
+        "--progressive",
+        action="store_true",
+        help="Emit [PARTIAL] and [FINAL] delimited output for progressive display",
+    )
+    parser.add_argument(
         "--benchmark",
         action="store_true",
         help="Print performance metrics (latency, char count, completeness)",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Bypass response cache",
+    )
+    parser.add_argument(
+        "--cache-ttl",
+        type=int,
+        default=86400,
+        help="Cache time-to-live in seconds (default: 86400 = 24h)",
     )
 
     args = parser.parse_args()
@@ -785,7 +920,10 @@ def main():
         fast=args.fast,
         turbo=args.turbo,
         stream=args.stream,
+        progressive=args.progressive,
         benchmark=args.benchmark,
+        no_cache=args.no_cache,
+        cache_ttl=args.cache_ttl,
     )
 
     elapsed = time.time() - start_time
@@ -793,8 +931,8 @@ def main():
     if result:
         answer = result['answer']
 
-        # For non-streaming mode, print the full response
-        if not args.stream:
+        # For non-streaming, non-progressive mode, print the full response
+        if not args.stream and not args.progressive:
             print()
             print("=" * 60)
             print("OPENEVIDENCE RESPONSE [PRESENT VERBATIM - DO NOT SUMMARIZE]")
