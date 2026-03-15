@@ -546,6 +546,27 @@ def ask_openevidence(
         if stream:
             print("\n")  # End streaming output
 
+        # Retry logic: if response is short/incomplete, wait more and try again
+        if answer and not response_looks_complete(answer) and len(answer) < 1000:
+            print(f"  Response looks incomplete ({len(answer)} chars), retrying extraction...")
+            for retry in range(3):
+                time.sleep(2.0)
+                retry_text = get_response_text(page, debug=debug, min_chars=min_chars)
+                if retry_text and len(retry_text) > len(answer):
+                    answer = retry_text
+                    if response_looks_complete(answer):
+                        print(f"  Retry {retry + 1}: got complete response ({len(answer)} chars)")
+                        break
+                    print(f"  Retry {retry + 1}: got {len(retry_text)} chars, still growing...")
+
+        # If we still have nothing, do a final extraction attempt with lower threshold
+        if not answer:
+            print("  Attempting final extraction with lower threshold...")
+            time.sleep(2.0)
+            answer = get_response_text(page, debug=debug, min_chars=100)
+            if answer:
+                print(f"  Final extraction got {len(answer)} chars")
+
         if answer:
             print(f"  Got response ({len(answer)} chars)")
 
