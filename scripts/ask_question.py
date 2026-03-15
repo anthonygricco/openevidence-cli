@@ -400,23 +400,61 @@ def ask_openevidence(
     context = None
 
     # Shared state for API interception
-    api_done = {'done': False, 'api_text': None}
+    api_done = {'done': False, 'api_text': None, 'article_id': None, 'last_status': None}
 
     def on_response(response):
         """Monitor network responses to detect when OE's API finishes streaming."""
         url = response.url
-        # Look for OE's chat/completion API endpoints
-        if any(pattern in url for pattern in ['/api/chat', '/api/completion', '/api/ask', '/api/query', 'openai', 'anthropic', '/chat']):
-            try:
-                status = response.status
+        # Skip static assets, images, fonts, etc.
+        skip_patterns = ['.js', '.css', '.png', '.jpg', '.svg', '.ico', '.woff', '.ttf',
+                         'fonts.', 'analytics', 'gtag', 'sentry', 'segment', '_next/static',
+                         'storage.googleapis.com', 'cookieyes']
+        if any(p in url for p in skip_patterns):
+            return
+
+        try:
+            # Capture article creation (POST /api/article → 201)
+            if '/api/article' in url and response.status == 201:
+                try:
+                    body = response.json()
+                    article_id = body.get('id') or body.get('uuid')
+                    if article_id:
+                        api_done['article_id'] = article_id
+                        if debug:
+                            print(f"    DEBUG API: Article created: {article_id}")
+                except Exception:
+                    pass
+
+            # Monitor article polling (GET /api/article/<uuid>) for completion
+            if api_done.get('article_id') and api_done['article_id'] in url and response.status == 200:
+                try:
+                    body = response.json()
+                    status = body.get('status') or body.get('state')
+                    api_done['last_status'] = status
+                    # Detect completion from API response fields
+                    if status in ('complete', 'completed', 'done', 'finished', 'success'):
+                        api_done['done'] = True
+                        if debug:
+                            print(f"    DEBUG API: Article complete (status={status})")
+                    # Also check for content fields that indicate completion
+                    content = body.get('content') or body.get('answer') or body.get('response') or body.get('body')
+                    if content and isinstance(content, str) and len(content) > 500:
+                        api_done['api_text'] = content
+                except Exception:
+                    pass
+
+            # Completion tracker signal
+            if '/api/article/ct' in url and 'status=success' in url:
+                api_done['done'] = True
+                if debug:
+                    print(f"    DEBUG API: Completion tracker fired")
+
+            # Log other API calls in debug mode
+            if debug and '/api/' in url and 'events' not in url:
                 content_type = response.headers.get('content-type', '')
-                if status == 200 and 'text/event-stream' not in content_type:
-                    # Non-streaming JSON response — API call is complete
-                    if debug:
-                        print(f"    DEBUG: API response detected: {url[:80]} ({status})")
-                    api_done['done'] = True
-            except Exception:
-                pass
+                print(f"    DEBUG API: {response.status} {content_type[:30]} {url[:100]}")
+        except Exception:
+            pass
 
     try:
         playwright = sync_playwright().start()
@@ -603,6 +641,14 @@ def ask_openevidence(
         # For streaming, use whatever we have if we timed out
         if stream and not answer and printed_len > 0:
             answer = get_response_text(page, debug=debug)
+
+        # If API captured text directly and it's better than DOM extraction, use it
+        if api_done.get('api_text') and (not answer or len(api_done['api_text']) > len(answer)):
+            if debug:
+                print(f"    DEBUG: Using API-captured text ({len(api_done['api_text'])} chars vs DOM {len(answer) if answer else 0})")
+            # Prefer DOM text as it includes rendered formatting, but API text is a good fallback
+            if not answer:
+                answer = api_done['api_text']
 
         if stream:
             print("\n")  # End streaming output
