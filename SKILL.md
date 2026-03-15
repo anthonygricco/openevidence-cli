@@ -35,10 +35,10 @@ A browser window opens. Click "Sign in with Apple" and complete login. Session i
 
 ```bash
 python3 ~/.openclaw/skills/openevidence/scripts/run.py ask_question.py \
-  --question "What is the evidence for adjuvant osimertinib in EGFR-mutated NSCLC?" --turbo
+  --question "What is the evidence for adjuvant osimertinib in EGFR-mutated NSCLC?" --reliable
 ```
 
-**Use `--turbo` flag** for fastest queries. Use `--fast` for a balance of speed and reliability.
+**Use `--reliable` flag** (recommended default). Auto-retries with escalating strategies (turbo → fast → normal) if the first attempt fails. Up to 3 total attempts.
 
 ## Usage Patterns
 
@@ -50,7 +50,7 @@ User says:
 Run:
 ```bash
 python3 ~/.openclaw/skills/openevidence/scripts/run.py ask_question.py \
-  --question "What's the survival benefit of hypofractionated whole breast radiation?" --turbo
+  --question "What's the survival benefit of hypofractionated whole breast radiation?" --reliable
 ```
 
 ### Progressive Output (for Telegram/Chat Integration)
@@ -154,12 +154,13 @@ python3 scripts/run.py ask_question.py --question "..." --turbo --benchmark
 
 | Mode | Flag | Overhead | Best For |
 |------|------|----------|----------|
-| API | `--api` | ~1s | Fastest, no browser needed |
-| Turbo | `--turbo` | ~3-5s | Fast browser with API capture |
-| Fast | `--fast` | ~5-8s | Reliable browser mode |
+| **Reliable** | `--reliable` | ~3-5s (up to 3 tries) | **Recommended default.** Auto-retries turbo → fast → normal |
+| API | `--api` | ~1s | Fastest, no browser. Requires prior browser run |
+| Turbo | `--turbo` | ~3-5s | Fast single-attempt browser |
+| Fast | `--fast` | ~5-8s | Conservative single-attempt browser |
 | Normal | (none) | ~15-20s | Human-like stealth |
 
-**Note:** OE server generation takes 45-60s regardless of mode. Use `--progressive` to see partial results while waiting.
+**Note:** OE server generation takes 45-60s regardless of mode. `--reliable` starts with turbo and only escalates if the attempt fails, so the happy path is just as fast.
 
 ## Output Formats
 

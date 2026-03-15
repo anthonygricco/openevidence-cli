@@ -130,15 +130,15 @@ FAST_MODE = {
     'min_wait_after_submit': 4.0,
 }
 
-# Turbo mode settings (maximum speed, may be less reliable)
+# Turbo mode settings (maximum speed, slightly padded for reliability)
 TURBO_MODE = {
     'after_load': (50, 100),
     'after_popup': (30, 60),
     'after_submit': (50, 100),
-    'stable_checks': 2,
+    'stable_checks': 3,
     'poll_interval': 0.3,
     'min_response_chars': 300,
-    'min_wait_after_submit': 2.0,  # seconds - OE needs time to stream
+    'min_wait_after_submit': 3.0,  # seconds - OE needs time to stream
 }
 
 # Normal mode settings (human-like for stealth)

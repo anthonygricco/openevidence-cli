@@ -169,10 +169,15 @@ def ask_via_api(
     timings = {}
     phase_start = time.time()
 
-    # Build POST body from template
-    body = template.get('body_template', {}).copy()
+    # Build POST body from template (deep copy to avoid mutation)
+    import copy
+    body = copy.deepcopy(template.get('body_template', {}))
     question_field = template.get('question_field', 'question')
-    body[question_field] = question
+    # Question may be nested (e.g. body.inputs.question)
+    if 'inputs' in body and question_field in body.get('inputs', {}):
+        body['inputs'][question_field] = question
+    else:
+        body[question_field] = question
 
     # Build headers
     headers = {}
@@ -434,19 +439,31 @@ def response_looks_complete(text: str) -> bool:
     """
     Heuristic check: does the response look like a complete OE answer?
 
-    Complete responses typically contain citation markers like [1], [2],
-    reference sections, or structured medical content with multiple paragraphs.
+    OE responses always end with a numbered References section containing
+    author names with "et al." — this is the strongest completion signal.
     """
     if not text or len(text) < 300:
         return False
 
     import re
     has_citations = bool(re.search(r'\[\d+\]', text))
+    has_multiple_paragraphs = text.count('\n\n') >= 2
+
+    # Strongest signal: "References" section header followed by numbered entries with authors
+    has_reference_section = bool(re.search(
+        r'References\s*\n.*(?:et al\.|Updated\s+\d{4})',
+        text, re.DOTALL | re.IGNORECASE
+    ))
+
+    # OE always produces: citations in body + reference section at the end
+    if has_reference_section and has_citations and has_multiple_paragraphs:
+        return True
+
+    # Weaker signals as fallback (for edge cases)
     has_references = any(marker in text.lower() for marker in [
         'references', 'sources', 'citation', 'et al.', 'doi:',
         'n engl j med', 'lancet', 'jama', 'j clin oncol',
     ])
-    has_multiple_paragraphs = text.count('\n\n') >= 2
 
     if (has_citations or has_references) and has_multiple_paragraphs:
         return True
@@ -1083,6 +1100,118 @@ def ask_openevidence(
             playwright.stop()
 
 
+def ask_with_retries(
+    question: str,
+    max_retries: int = 2,
+    api_first: bool = False,
+    **kwargs,
+) -> dict | None:
+    """
+    Reliability wrapper: retries on failure with escalating strategies.
+
+    Attempt order:
+    1. (Optional) API mode if api_first=True
+    2. Turbo browser mode (fastest)
+    3. Fast browser mode (more conservative timing)
+    4. Normal browser mode + fresh page load (most reliable)
+
+    Each attempt gets a fresh browser context. On auth failure,
+    forces re-validation before retry.
+
+    Args:
+        question: Medical question
+        max_retries: Maximum retry attempts after first failure (default 2, total 3 tries)
+        api_first: Try API mode before browser
+        **kwargs: Passed through to ask_openevidence
+
+    Returns:
+        Result dict or None
+    """
+    # Strip streaming/progressive from reliability mode — we want final answer
+    kwargs.pop('stream', None)
+    kwargs.pop('progressive', None)
+
+    # Check cache first (shared across all attempts)
+    no_cache = kwargs.get('no_cache', False)
+    cache_ttl = kwargs.get('cache_ttl', 86400)
+    if not no_cache:
+        cached = get_cached_response(question, cache_ttl)
+        if cached:
+            print(f"[CACHED] Returning cached response ({len(cached.get('answer', ''))} chars)")
+            cached['timings'] = {'cache_hit': 0.0}
+            return cached
+
+    # Build attempt strategies with escalating conservatism
+    attempts = []
+    if api_first:
+        attempts.append(('api', {}))
+    attempts.append(('turbo', {'turbo': True, 'fast': False}))
+    attempts.append(('fast', {'turbo': False, 'fast': True}))
+    attempts.append(('normal', {'turbo': False, 'fast': False}))
+
+    # Limit total attempts
+    attempts = attempts[:1 + max_retries]
+
+    last_error = None
+    for i, (strategy_name, overrides) in enumerate(attempts):
+        attempt_num = i + 1
+        if attempt_num > 1:
+            # Backoff: wait before retry (2s, 5s)
+            wait = 2 if attempt_num == 2 else 5
+            print(f"\n  Retry {attempt_num - 1}/{max_retries}: waiting {wait}s before {strategy_name} mode...")
+            time.sleep(wait)
+        else:
+            print(f"  Strategy: {strategy_name}")
+
+        try:
+            if strategy_name == 'api':
+                result = ask_via_api(
+                    question=question,
+                    debug=kwargs.get('debug', False),
+                    timeout=kwargs.get('timeout', 120),
+                    no_cache=True,  # Already checked cache above
+                    cache_ttl=cache_ttl,
+                )
+                if result and result.get('answer') and len(result['answer']) > 200:
+                    if not no_cache:
+                        save_to_cache(question, result)
+                    return result
+                print(f"  {strategy_name} mode: no usable result, trying next strategy...")
+                continue
+
+            # Browser mode with overrides
+            attempt_kwargs = {**kwargs, **overrides, 'no_cache': True}
+            result = ask_openevidence(question=question, **attempt_kwargs)
+
+            if result and result.get('answer'):
+                answer = result['answer']
+                # Validate response quality
+                if len(answer) < 200:
+                    print(f"  {strategy_name}: response too short ({len(answer)} chars), retrying...")
+                    last_error = f"Short response ({len(answer)} chars)"
+                    continue
+                if not response_looks_complete(answer) and len(answer) < 500:
+                    print(f"  {strategy_name}: response looks incomplete, retrying...")
+                    last_error = "Incomplete response"
+                    continue
+
+                # Good response
+                if not no_cache:
+                    save_to_cache(question, result)
+                return result
+            else:
+                last_error = "No response returned"
+                print(f"  {strategy_name}: no response, trying next strategy...")
+
+        except Exception as e:
+            last_error = str(e)
+            print(f"  {strategy_name} failed: {e}")
+            continue
+
+    print(f"\n  All {len(attempts)} attempts failed. Last error: {last_error}")
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Ask OpenEvidence a question")
     parser.add_argument(
@@ -1167,6 +1296,17 @@ def main():
         default=120,
         help="Response timeout in seconds (default: 120)",
     )
+    parser.add_argument(
+        "--reliable",
+        action="store_true",
+        help="Reliability mode: auto-retry with escalating strategies (turbo → fast → normal)",
+    )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=2,
+        help="Max retries in --reliable mode (default: 2, so 3 total attempts)",
+    )
 
     args = parser.parse_args()
 
@@ -1235,36 +1375,53 @@ def main():
 
     result = None
 
-    # Try API mode first if requested
-    if args.api:
-        result = ask_via_api(
+    if args.reliable:
+        # Reliability mode: auto-retry with escalating strategies
+        result = ask_with_retries(
             question=args.question,
-            progressive=args.progressive,
-            debug=args.debug,
-            timeout=args.timeout,
-            no_cache=args.no_cache,
-            cache_ttl=args.cache_ttl,
-        )
-        if not result:
-            print("  API mode failed, falling back to browser...")
-
-    # Fall back to browser mode
-    if not result:
-        result = ask_openevidence(
-            question=args.question,
+            max_retries=args.retries,
+            api_first=args.api,
             headless=not args.show_browser,
             debug=args.debug,
             save_images=args.save_images,
             output_dir=output_dir,
-            fast=args.fast,
-            turbo=args.turbo,
-            stream=args.stream,
-            progressive=args.progressive,
             benchmark=args.benchmark,
             no_cache=args.no_cache,
             cache_ttl=args.cache_ttl,
             timeout=args.timeout,
         )
+    else:
+        # Original single-attempt mode
+        # Try API mode first if requested
+        if args.api:
+            result = ask_via_api(
+                question=args.question,
+                progressive=args.progressive,
+                debug=args.debug,
+                timeout=args.timeout,
+                no_cache=args.no_cache,
+                cache_ttl=args.cache_ttl,
+            )
+            if not result:
+                print("  API mode failed, falling back to browser...")
+
+        # Fall back to browser mode
+        if not result:
+            result = ask_openevidence(
+                question=args.question,
+                headless=not args.show_browser,
+                debug=args.debug,
+                save_images=args.save_images,
+                output_dir=output_dir,
+                fast=args.fast,
+                turbo=args.turbo,
+                stream=args.stream,
+                progressive=args.progressive,
+                benchmark=args.benchmark,
+                no_cache=args.no_cache,
+                cache_ttl=args.cache_ttl,
+                timeout=args.timeout,
+            )
 
     elapsed = time.time() - start_time
 
