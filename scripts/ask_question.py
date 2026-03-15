@@ -1086,8 +1086,12 @@ def main():
     parser = argparse.ArgumentParser(description="Ask OpenEvidence a question")
     parser.add_argument(
         "--question", "-q",
-        required=True,
         help="The medical question to ask",
+    )
+    parser.add_argument(
+        "--batch",
+        type=str,
+        help="Batch mode: path to file with one question per line",
     )
     parser.add_argument(
         "--show-browser",
@@ -1158,6 +1162,64 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Validate: need either --question or --batch
+    if not args.question and not args.batch:
+        parser.error("either --question or --batch is required")
+
+    # Batch mode: process multiple questions
+    if args.batch:
+        batch_file = Path(args.batch)
+        if not batch_file.exists():
+            print(f"Batch file not found: {args.batch}")
+            sys.exit(1)
+
+        questions = [line.strip() for line in batch_file.read_text().splitlines() if line.strip() and not line.startswith('#')]
+        if not questions:
+            print("No questions found in batch file.")
+            sys.exit(1)
+
+        print(f"Batch mode: {len(questions)} questions")
+        batch_start = time.time()
+        results = []
+
+        for i, q in enumerate(questions, 1):
+            print(f"\n{'='*60}")
+            print(f"[{i}/{len(questions)}] {q[:80]}")
+            print(f"{'='*60}")
+
+            r = None
+            if args.api:
+                r = ask_via_api(question=q, debug=args.debug, no_cache=args.no_cache, cache_ttl=args.cache_ttl)
+                if not r:
+                    print("  API failed, trying browser...")
+
+            if not r:
+                r = ask_openevidence(
+                    question=q, headless=not args.show_browser, debug=args.debug,
+                    fast=args.fast, turbo=args.turbo, no_cache=args.no_cache, cache_ttl=args.cache_ttl,
+                )
+
+            if r:
+                results.append({'question': q, 'answer': r['answer'], 'timing': time.time() - batch_start})
+                if args.format == "json":
+                    pass  # print all at end
+                else:
+                    print(f"\n{r['answer'][:200]}...\n")
+            else:
+                results.append({'question': q, 'answer': None, 'error': 'No response'})
+                print(f"  FAILED: {q[:60]}")
+
+        # Final batch output
+        batch_elapsed = time.time() - batch_start
+        if args.format == "json":
+            print(json.dumps({'batch': results, 'total_time': round(batch_elapsed, 1)}, indent=2))
+        else:
+            print(f"\n{'='*60}")
+            print(f"Batch complete: {len([r for r in results if r.get('answer')])} / {len(questions)} succeeded in {batch_elapsed:.1f}s")
+            print(f"{'='*60}")
+
+        sys.exit(0)
 
     output_dir = Path(args.output_dir) if args.output_dir else None
 
