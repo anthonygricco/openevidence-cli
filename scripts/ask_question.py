@@ -655,10 +655,17 @@ def main():
         action="store_true",
         help="Stream response as it appears (shows text incrementally)",
     )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="Print performance metrics (latency, char count, completeness)",
+    )
 
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir) if args.output_dir else None
+
+    start_time = time.time()
 
     result = ask_openevidence(
         question=args.question,
@@ -670,6 +677,8 @@ def main():
         turbo=args.turbo,
         stream=args.stream,
     )
+
+    elapsed = time.time() - start_time
 
     if result:
         answer = result['answer']
@@ -693,6 +702,25 @@ def main():
         print("-" * 60)
         print("Source: OpenEvidence (https://www.openevidence.com)")
         print("-" * 60)
+
+        # Benchmark output
+        if args.benchmark:
+            import re
+            has_citations = bool(re.search(r'\[\d+\]', answer))
+            has_refs = 'references' in answer.lower() or 'et al.' in answer.lower()
+            mode_name = "turbo" if args.turbo else "fast" if args.fast else "normal"
+            print()
+            print("=" * 60)
+            print("BENCHMARK RESULTS")
+            print("=" * 60)
+            print(f"  Mode:         {mode_name}")
+            print(f"  Latency:      {elapsed:.1f}s")
+            print(f"  Response:     {len(answer)} chars")
+            print(f"  Citations:    {'yes' if has_citations else 'no'}")
+            print(f"  References:   {'yes' if has_refs else 'no'}")
+            print(f"  Complete:     {'yes' if response_looks_complete(answer) else 'no'}")
+            print(f"  Paragraphs:   {answer.count(chr(10) + chr(10)) + 1}")
+            print("=" * 60)
     else:
         print()
         print("Failed to get response from OpenEvidence.")

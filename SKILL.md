@@ -26,7 +26,7 @@ Query OpenEvidence (https://www.openevidence.com) for evidence-based medical ans
 
 ```bash
 # Authenticate via Apple Sign-In
-python3 ~/.claude/skills/openevidence/scripts/run.py auth_manager.py setup
+python3 ~/.openclaw/skills/openevidence/scripts/run.py auth_manager.py setup
 ```
 
 A browser window opens. Click "Sign in with Apple" and complete login. Session is saved for future use.
@@ -34,11 +34,11 @@ A browser window opens. Click "Sign in with Apple" and complete login. Session i
 ### Ask a Question
 
 ```bash
-python3 ~/.claude/skills/openevidence/scripts/run.py ask_question.py \
+python3 ~/.openclaw/skills/openevidence/scripts/run.py ask_question.py \
   --question "What is the evidence for adjuvant osimertinib in EGFR-mutated NSCLC?" --turbo
 ```
 
-**Use `--turbo` flag** for fastest queries (~3-5 seconds). Use `--fast` for a balance of speed and reliability (~5-8 seconds).
+**Use `--turbo` flag** for fastest queries. Use `--fast` for a balance of speed and reliability.
 
 ## Usage Patterns
 
@@ -105,6 +105,9 @@ python3 scripts/run.py ask_question.py --question "..." --show-browser
 
 # Debug mode (verbose output)
 python3 scripts/run.py ask_question.py --question "..." --debug
+
+# Benchmark mode (print performance metrics)
+python3 scripts/run.py ask_question.py --question "..." --turbo --benchmark
 ```
 
 ## Output Format
@@ -154,7 +157,7 @@ Source: OpenEvidence (https://www.openevidence.com)
 
 ## Data Storage
 
-All data stored in `~/.claude/skills/openevidence/data/`:
+All data stored in `~/.openclaw/skills/openevidence/data/`:
 - `auth_info.json` - Authentication metadata
 - `browser_state/` - Cookies, browser profile
 
@@ -163,7 +166,7 @@ All data stored in `~/.claude/skills/openevidence/data/`:
 ## Limitations
 
 - Requires manual Apple Sign-In for initial setup
-- Query times: ~3-5s (turbo), ~5-8s (fast), ~15-20s (normal)
+- Query times depend on OE server response time (typically 45-60s for complete responses with citations)
 - Rate limits may apply on OpenEvidence side
 - CSS selectors may break if OpenEvidence updates their UI
 
