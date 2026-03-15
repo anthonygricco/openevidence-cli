@@ -61,10 +61,22 @@ def find_element(page, selectors: list[str], timeout: int = ELEMENT_TIMEOUT):
     return None, None
 
 
-def dismiss_popups(page) -> None:
+def dismiss_popups(page, quick: bool = False) -> None:
     """
     Dismiss any popups/dialogs (HIPAA consent, cookies, etc.)
+
+    Args:
+        quick: If True, only check for dialog/modal presence first (fast path)
     """
+    # Fast path: check if any dialog is visible at all
+    if quick:
+        try:
+            dialog = page.query_selector('[role="dialog"], .MuiDialog-root')
+            if not dialog or not dialog.is_visible():
+                return  # No dialog visible, skip all selectors
+        except Exception:
+            return
+
     popup_dismiss_selectors = [
         'button:has-text("OK")',
         'button:has-text("Accept")',
@@ -85,7 +97,7 @@ def dismiss_popups(page) -> None:
             if btn and btn.is_visible():
                 print(f"  Dismissing popup: {selector}")
                 btn.click()
-                time.sleep(0.5)
+                time.sleep(0.3)
         except Exception:
             continue
 
@@ -344,7 +356,8 @@ def ask_openevidence(
 
         # Navigate to OpenEvidence
         print("  Opening OpenEvidence...")
-        page.goto(BASE_URL, wait_until="domcontentloaded", timeout=PAGE_LOAD_TIMEOUT)
+        wait_strategy = "commit" if turbo else "domcontentloaded"
+        page.goto(BASE_URL, wait_until=wait_strategy, timeout=PAGE_LOAD_TIMEOUT)
         StealthUtils.random_delay(*mode['after_load'])
 
         # Dismiss any initial popups (HIPAA consent, cookies, etc.)
@@ -363,10 +376,10 @@ def ask_openevidence(
         print(f"  Found input: {input_selector}")
 
         # Type the question
-        if fast:
+        if fast or turbo:
             print("  Entering question (fast)...")
             page.fill(input_selector, question)
-            StealthUtils.random_delay(200, 400)
+            StealthUtils.random_delay(*mode['after_popup'])
         else:
             print("  Typing question...")
             StealthUtils.human_type(page, input_selector, question)
@@ -423,8 +436,8 @@ def ask_openevidence(
         while time.time() < deadline:
             elapsed = time.time() - submit_time
 
-            # Dismiss any popups that might appear
-            dismiss_popups(page)
+            # Dismiss any popups that might appear (quick check in poll loop)
+            dismiss_popups(page, quick=True)
 
             # Check if still loading
             if is_loading(page):
