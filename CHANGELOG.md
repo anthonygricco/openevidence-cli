@@ -2,6 +2,27 @@
 
 All notable changes to the OpenEvidence CLI skill.
 
+## [v2.0.0] - 2026-03-15
+
+### Reliability
+- **`--reliable` mode** (new recommended default): auto-retry with escalating strategies (turbo → fast → normal), up to 3 attempts with backoff
+- **Pre-flight health check**: HEAD request to openevidence.com before launching browser — fails fast when site is unreachable
+- **Cookie auth validation**: verifies session cookies are still valid before browser launch
+- **Stale lock cleanup**: detects and removes Chromium lock files from crashed previous runs
+- **Tightened turbo stability**: stable_checks 2→3, min_wait_after_submit 2→3s
+- **Stronger completion detection**: References section with author names as primary signal
+- Response quality gate: rejects answers <200 chars or missing citations
+
+### Features
+- **Parallel query runner** (`parallel_ask.py`): run 2+ queries simultaneously, each in own browser, wall-clock time ≈ one query
+- **HIPAA popup handling**: auto-dismisses "I am a healthcare professional" verification dialog
+
+### Fixes
+- **API mode response extraction**: now checks `output`/`partial_output` fields (OE's actual response fields) instead of guessing
+- **API mode question nesting**: fixed `body.inputs.question` path (was setting top-level field)
+
+---
+
 ## [Cycle 15] - 2026-03-15
 - Updated SKILL.md with full documentation for all new features
 - Created CHANGELOG.md covering all 15 improvement cycles
