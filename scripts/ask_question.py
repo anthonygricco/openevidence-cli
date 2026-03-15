@@ -102,6 +102,81 @@ def save_to_cache(question: str, result: dict) -> None:
 API_TEMPLATE_FILE = DATA_DIR / "api_template.json"
 
 
+def check_connection(timeout: float = 5.0) -> bool:
+    """Quick HEAD request to verify openevidence.com is reachable."""
+    import urllib.request
+    import urllib.error
+
+    try:
+        req = urllib.request.Request(BASE_URL, method='HEAD')
+        req.add_header('User-Agent', 'Mozilla/5.0')
+        urllib.request.urlopen(req, timeout=timeout)
+        return True
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+        return False
+
+
+def validate_cookies_quick(debug: bool = False) -> bool:
+    """
+    Check if saved cookies are still valid via a lightweight HTTP request.
+    Returns True if auth looks valid, False if expired/missing.
+    """
+    import urllib.request
+    import urllib.error
+
+    if not STATE_JSON.exists():
+        if debug:
+            print("  No browser state file found.")
+        return False
+
+    try:
+        with open(STATE_JSON) as f:
+            state = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return False
+
+    cookies = state.get('cookies', [])
+    cookie_str = '; '.join(
+        f"{c['name']}={c['value']}"
+        for c in cookies
+        if 'openevidence.com' in c.get('domain', '')
+    )
+    if not cookie_str:
+        if debug:
+            print("  No OpenEvidence cookies in state.")
+        return False
+
+    # Try fetching a page that requires auth — if we get redirected to login, auth is dead
+    try:
+        req = urllib.request.Request(BASE_URL, method='GET')
+        req.add_header('Cookie', cookie_str)
+        req.add_header('User-Agent', (
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/131.0.0.0 Safari/537.36'
+        ))
+        resp = urllib.request.urlopen(req, timeout=10)
+        # If we get 200 and aren't redirected to an auth page, cookies are valid
+        final_url = resp.url if hasattr(resp, 'url') else ''
+        if 'login' in final_url or 'auth' in final_url:
+            if debug:
+                print(f"  Auth redirect detected: {final_url}")
+            return False
+        return True
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            if debug:
+                print(f"  Auth check returned {e.code}")
+            return False
+        # Other HTTP errors (500, etc.) don't necessarily mean auth is bad
+        return True
+    except (urllib.error.URLError, OSError) as e:
+        if debug:
+            print(f"  Auth check network error: {e}")
+        # Network error, not an auth issue
+        return True
+
+
 def ask_via_api(
     question: str,
     progressive: bool = False,
@@ -251,7 +326,8 @@ def ask_via_api(
 
             status = data.get('status') or data.get('state')
             content = (
-                data.get('content') or data.get('answer')
+                data.get('output') or data.get('partial_output')
+                or data.get('content') or data.get('answer')
                 or data.get('response') or data.get('body') or ''
             )
 
@@ -357,6 +433,13 @@ def dismiss_popups(page, quick: bool = False) -> None:
             return
 
     popup_dismiss_selectors = [
+        # HIPAA / healthcare professional verification
+        'button:has-text("I am a healthcare professional")',
+        'button:has-text("I am a Health Care Professional")',
+        'button:has-text("I\'m a healthcare professional")',
+        'button:has-text("Verify")',
+        'button:has-text("Confirm")',
+        # Standard dismiss buttons
         'button:has-text("OK")',
         'button:has-text("Accept")',
         'button:has-text("I Agree")',
@@ -691,6 +774,15 @@ def ask_openevidence(
         print("Not authenticated. Run: python auth_manager.py setup")
         return None
 
+    # Pre-flight: verify site is reachable before spinning up a browser
+    if not check_connection():
+        print("  ERROR: openevidence.com is unreachable. Check your network connection.")
+        return None
+
+    # Pre-flight: validate cookies are still valid
+    if not validate_cookies_quick(debug=debug):
+        print("  WARNING: Auth cookies may be expired. If this fails, run: python auth_manager.py reauth")
+
     # Select timing mode
     if turbo:
         mode = TURBO_MODE
@@ -749,7 +841,11 @@ def ask_openevidence(
                         if debug:
                             print(f"    DEBUG API: Article complete (status={status})")
                     # Also check for content fields that indicate completion
-                    content = body.get('content') or body.get('answer') or body.get('response') or body.get('body')
+                    content = (
+                        body.get('output') or body.get('partial_output')
+                        or body.get('content') or body.get('answer')
+                        or body.get('response') or body.get('body')
+                    )
                     if content and isinstance(content, str) and len(content) > 500:
                         api_done['api_text'] = content
                 except Exception:

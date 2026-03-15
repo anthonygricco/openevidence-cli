@@ -80,6 +80,39 @@ class BrowserFactory:
     """Factory for creating browser contexts with persistent state."""
 
     @staticmethod
+    def clean_stale_locks() -> None:
+        """
+        Remove stale Chromium lock files from a crashed previous run.
+        Chromium refuses to start if SingletonLock/SingletonCookie/SingletonSocket
+        exist from a dead process.
+        """
+        import os
+        import signal
+
+        lock_files = ['SingletonLock', 'SingletonCookie', 'SingletonSocket']
+        for name in lock_files:
+            lock_path = BROWSER_PROFILE_DIR / name
+            if lock_path.exists() or lock_path.is_symlink():
+                # SingletonLock is a symlink to the PID — check if process is alive
+                if lock_path.is_symlink():
+                    try:
+                        target = os.readlink(str(lock_path))
+                        # Target format is typically hostname-PID
+                        pid_str = target.rsplit('-', 1)[-1]
+                        pid = int(pid_str)
+                        os.kill(pid, 0)  # Check if process exists (signal 0)
+                        # Process is alive — don't remove
+                        continue
+                    except (ValueError, ProcessLookupError, PermissionError, OSError):
+                        pass  # Process dead or can't parse — safe to remove
+
+                try:
+                    lock_path.unlink()
+                    print(f"  Cleaned stale lock: {name}")
+                except OSError:
+                    pass
+
+    @staticmethod
     def launch_persistent_context(
         playwright: Playwright,
         headless: bool = True,
@@ -100,6 +133,9 @@ class BrowserFactory:
         """
         # Ensure profile directory exists
         BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Clean stale lock files from crashed previous runs
+        BrowserFactory.clean_stale_locks()
 
         # Launch persistent context
         context = playwright.chromium.launch_persistent_context(
