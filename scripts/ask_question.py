@@ -27,6 +27,7 @@ from config import (
     PAGE_LOAD_TIMEOUT,
     QUERY_INPUT_SELECTORS,
     QUERY_TIMEOUT,
+    RESPONSE_NOISE_PATTERNS,
     SUBMIT_BUTTON_SELECTORS,
     TURBO_MODE,
 )
@@ -101,51 +102,112 @@ def is_loading(page) -> bool:
     return False
 
 
-def get_response_text(page, debug: bool = False) -> str | None:
-    """
-    Extract the COMPLETE response text from the page, exactly as shown.
+def clean_response_text(text: str) -> str:
+    """Remove UI noise (thinking indicators, loading text) from response."""
+    if not text:
+        return text
 
-    Returns:
-        Full response text if found, None otherwise
-    """
-    # Only ignore actual popup/consent text, not medical content
+    lines = text.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Skip lines that are purely noise
+        is_noise = False
+        for pattern in RESPONSE_NOISE_PATTERNS:
+            if stripped.lower() == pattern.lower() or stripped.lower().startswith(pattern.lower()):
+                is_noise = True
+                break
+        if not is_noise:
+            cleaned_lines.append(line)
+
+    # Also strip popup/consent patterns from the start
+    result = '\n'.join(cleaned_lines).strip()
     popup_patterns = [
         "protected health information (phi) will be securely processed",
         "cookie",
     ]
+    for pattern in popup_patterns:
+        if result.lower().startswith(pattern):
+            lines = result.split('\n')
+            result = '\n'.join(lines[1:]).strip()
 
-    # Look for the article element which contains the full response
+    return result
+
+
+def response_looks_complete(text: str) -> bool:
+    """
+    Heuristic check: does the response look like a complete OE answer?
+
+    Complete responses typically contain citation markers like [1], [2],
+    reference sections, or structured medical content with multiple paragraphs.
+    """
+    if not text or len(text) < 300:
+        return False
+
+    # Strong signals of completeness
+    import re
+    has_citations = bool(re.search(r'\[\d+\]', text))
+    has_references = any(marker in text.lower() for marker in [
+        'references', 'sources', 'citation', 'et al.', 'doi:',
+        'n engl j med', 'lancet', 'jama', 'j clin oncol',
+    ])
+    has_multiple_paragraphs = text.count('\n\n') >= 2
+
+    # Consider complete if it has citations or references AND multiple paragraphs
+    if (has_citations or has_references) and has_multiple_paragraphs:
+        return True
+
+    # Also consider complete if it's long enough (>1000 chars with paragraphs)
+    if len(text) > 1000 and has_multiple_paragraphs:
+        return True
+
+    return False
+
+
+def get_response_text(page, debug: bool = False, min_chars: int = 100) -> str | None:
+    """
+    Extract the COMPLETE response text from the page, exactly as shown.
+
+    Args:
+        page: Playwright page
+        debug: Show debug output
+        min_chars: Minimum character count to accept
+
+    Returns:
+        Full response text if found, None otherwise
+    """
+    # Strategy 1: JavaScript extraction (most reliable, gets innerText from article)
     try:
-        # The main response is in an article element
-        article = page.query_selector('article')
-        if article:
-            text = article.inner_text().strip()
-            if text and len(text) > 100:
-                # Only filter out the HIPAA popup text if it's at the very start
-                for pattern in popup_patterns:
-                    if text.lower().startswith(pattern):
-                        # Remove just the popup line
-                        lines = text.split('\n')
-                        text = '\n'.join(lines[1:]).strip()
+        text = page.evaluate('''() => {
+            const article = document.querySelector('article');
+            if (article) return article.innerText;
+            const main = document.querySelector('main');
+            if (main) return main.innerText;
+            return null;
+        }''')
+        if text:
+            text = clean_response_text(text.strip())
+            if text and len(text) > min_chars:
                 if debug:
-                    print(f"    DEBUG: Got full article text ({len(text)} chars)")
+                    print(f"    DEBUG: JS extraction got {len(text)} chars")
                 return text
     except Exception as e:
         if debug:
-            print(f"    DEBUG: Article extraction error: {e}")
+            print(f"    DEBUG: JS extraction error: {e}")
 
-    # Fallback: get the main content area
-    try:
-        main = page.query_selector('main')
-        if main:
-            text = main.inner_text().strip()
-            if text and len(text) > 100:
-                if debug:
-                    print(f"    DEBUG: Got main content ({len(text)} chars)")
-                return text
-    except Exception as e:
-        if debug:
-            print(f"    DEBUG: Main extraction error: {e}")
+    # Strategy 2: Playwright selector fallback
+    for selector in ['article', 'main']:
+        try:
+            element = page.query_selector(selector)
+            if element:
+                text = clean_response_text(element.inner_text().strip())
+                if text and len(text) > min_chars:
+                    if debug:
+                        print(f"    DEBUG: Selector '{selector}' got {len(text)} chars")
+                    return text
+        except Exception as e:
+            if debug:
+                print(f"    DEBUG: Selector '{selector}' error: {e}")
 
     return None
 
@@ -349,13 +411,18 @@ def ask_openevidence(
         last_text = None
         printed_len = 0  # For streaming: track how much we've printed
         deadline = time.time() + QUERY_TIMEOUT / 1000
+        submit_time = time.time()
 
         poll_interval = mode.get('poll_interval', 1.0)
+        min_chars = mode.get('min_response_chars', 300)
+        min_wait = mode.get('min_wait_after_submit', 3.0)
         # Use faster polling for streaming
         if stream:
             poll_interval = 0.2
 
         while time.time() < deadline:
+            elapsed = time.time() - submit_time
+
             # Dismiss any popups that might appear
             dismiss_popups(page)
 
@@ -365,9 +432,17 @@ def ask_openevidence(
                 continue
 
             # Try to get response text
-            text = get_response_text(page, debug=debug)
+            text = get_response_text(page, debug=debug, min_chars=min_chars)
 
             if text:
+                # Don't accept responses before minimum wait time
+                if elapsed < min_wait:
+                    if debug:
+                        print(f"    DEBUG: Got {len(text)} chars but only {elapsed:.1f}s elapsed (min {min_wait}s)")
+                    last_text = text
+                    time.sleep(poll_interval)
+                    continue
+
                 if stream:
                     # Print new content as it appears
                     # Only print if text is strictly growing (avoid re-render duplicates)
@@ -394,9 +469,11 @@ def ask_openevidence(
                     # Non-streaming: wait for stability
                     if text == last_text:
                         stable_count += 1
+                        # Accept if stable AND (looks complete OR enough stable checks)
                         if stable_count >= mode['stable_checks']:
-                            answer = text
-                            break
+                            if response_looks_complete(text) or stable_count >= mode['stable_checks'] + 2:
+                                answer = text
+                                break
                     else:
                         stable_count = 0
                         last_text = text

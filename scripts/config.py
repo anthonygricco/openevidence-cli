@@ -124,8 +124,10 @@ FAST_MODE = {
     'after_load': (300, 500),        # Minimal wait after page load
     'after_popup': (100, 200),       # Quick popup dismiss
     'after_submit': (200, 400),      # Quick submit wait
-    'stable_checks': 1,              # Single stability check
+    'stable_checks': 2,              # Two stability checks
     'poll_interval': 0.5,            # Faster polling (seconds)
+    'min_response_chars': 300,
+    'min_wait_after_submit': 4.0,
 }
 
 # Turbo mode settings (maximum speed, may be less reliable)
@@ -133,8 +135,10 @@ TURBO_MODE = {
     'after_load': (100, 200),
     'after_popup': (50, 100),
     'after_submit': (100, 200),
-    'stable_checks': 1,
-    'poll_interval': 0.3,
+    'stable_checks': 3,
+    'poll_interval': 0.5,
+    'min_response_chars': 300,
+    'min_wait_after_submit': 3.0,  # seconds - OE needs time to stream
 }
 
 # Normal mode settings (human-like for stealth)
@@ -144,4 +148,14 @@ NORMAL_MODE = {
     'after_submit': (1000, 2000),
     'stable_checks': 3,
     'poll_interval': 1.0,
+    'min_response_chars': 300,
+    'min_wait_after_submit': 5.0,
 }
+
+# Noise patterns to strip from response text
+RESPONSE_NOISE_PATTERNS = [
+    "Finished thinking",
+    "Thinking...",
+    "Searching evidence...",
+    "Analyzing sources...",
+]
