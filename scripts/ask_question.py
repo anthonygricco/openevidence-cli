@@ -345,6 +345,7 @@ def ask_openevidence(
     fast: bool = False,
     turbo: bool = False,
     stream: bool = False,
+    benchmark: bool = False,
 ) -> dict | None:
     """
     Ask a question to OpenEvidence.
@@ -358,6 +359,7 @@ def ask_openevidence(
         fast: Use fast mode (reduced delays, direct input)
         turbo: Use turbo mode (maximum speed, may be less reliable)
         stream: Stream response text as it appears
+        benchmark: Collect and return phase timing data
 
     Returns:
         Dict with 'answer', 'images', 'screenshot' keys, or None on failure
@@ -381,6 +383,10 @@ def ask_openevidence(
 
     print(f"[{mode_name}] Asking: {question[:80]}{'...' if len(question) > 80 else ''}")
 
+    # Phase timing
+    timings = {}
+    phase_start = time.time()
+
     playwright = None
     context = None
 
@@ -390,10 +396,12 @@ def ask_openevidence(
             playwright,
             headless=headless,
         )
+        timings['browser_launch'] = time.time() - phase_start
 
         page = context.new_page()
 
         # Navigate to OpenEvidence
+        phase_start = time.time()
         print("  Opening OpenEvidence...")
         wait_strategy = "commit" if turbo else "domcontentloaded"
         page.goto(BASE_URL, wait_until=wait_strategy, timeout=PAGE_LOAD_TIMEOUT)
@@ -402,8 +410,10 @@ def ask_openevidence(
         # Dismiss any initial popups (HIPAA consent, cookies, etc.)
         dismiss_popups(page)
         StealthUtils.random_delay(*mode['after_popup'])
+        timings['page_load'] = time.time() - phase_start
 
         # Find chat input
+        phase_start = time.time()
         print("  Looking for chat input...")
         input_element, input_selector = find_element(page, QUERY_INPUT_SELECTORS)
 
@@ -423,8 +433,10 @@ def ask_openevidence(
             print("  Typing question...")
             StealthUtils.human_type(page, input_selector, question)
             StealthUtils.random_delay(500, 1000)
+        timings['input'] = time.time() - phase_start
 
         # Submit the question
+        phase_start = time.time()
         print("  Submitting...")
 
         # Try clicking submit button first
@@ -449,7 +461,10 @@ def ask_openevidence(
         dismiss_popups(page)
         StealthUtils.random_delay(*mode['after_popup'])
 
+        timings['submit'] = time.time() - phase_start
+
         # Wait for response
+        phase_start = time.time()
         if stream:
             print("  Streaming response...\n")
             print("=" * 60)
@@ -465,9 +480,11 @@ def ask_openevidence(
         deadline = time.time() + QUERY_TIMEOUT / 1000
         submit_time = time.time()
 
-        poll_interval = mode.get('poll_interval', 1.0)
+        base_poll_interval = mode.get('poll_interval', 1.0)
+        poll_interval = base_poll_interval
         min_chars = mode.get('min_response_chars', 300)
         min_wait = mode.get('min_wait_after_submit', 3.0)
+        first_text_seen = False
         # Use faster polling for streaming
         if stream:
             poll_interval = 0.2
@@ -487,6 +504,12 @@ def ask_openevidence(
             text = get_response_text(page, debug=debug, min_chars=min_chars)
 
             if text:
+                # Adaptive polling: once we see text, slow down slightly
+                if not first_text_seen:
+                    first_text_seen = True
+                    if not stream:
+                        poll_interval = base_poll_interval * 1.5  # Text is flowing, poll less aggressively
+
                 # Don't accept responses before minimum wait time
                 if elapsed < min_wait:
                     if debug:
@@ -568,12 +591,14 @@ def ask_openevidence(
                 print(f"  Final extraction got {len(answer)} chars")
 
         if answer:
+            timings['response_wait'] = time.time() - phase_start
             print(f"  Got response ({len(answer)} chars)")
 
             result = {
                 'answer': answer,
                 'images': [],
                 'screenshot': None,
+                'timings': timings,
             }
 
             # Capture images if requested
@@ -676,6 +701,7 @@ def main():
         fast=args.fast,
         turbo=args.turbo,
         stream=args.stream,
+        benchmark=args.benchmark,
     )
 
     elapsed = time.time() - start_time
@@ -707,6 +733,7 @@ def main():
         if args.benchmark:
             import re
             has_citations = bool(re.search(r'\[\d+\]', answer))
+            citation_count = len(re.findall(r'\[\d+\]', answer))
             has_refs = 'references' in answer.lower() or 'et al.' in answer.lower()
             mode_name = "turbo" if args.turbo else "fast" if args.fast else "normal"
             print()
@@ -716,10 +743,20 @@ def main():
             print(f"  Mode:         {mode_name}")
             print(f"  Latency:      {elapsed:.1f}s")
             print(f"  Response:     {len(answer)} chars")
-            print(f"  Citations:    {'yes' if has_citations else 'no'}")
+            print(f"  Citations:    {citation_count} markers ({'yes' if has_citations else 'no'})")
             print(f"  References:   {'yes' if has_refs else 'no'}")
             print(f"  Complete:     {'yes' if response_looks_complete(answer) else 'no'}")
             print(f"  Paragraphs:   {answer.count(chr(10) + chr(10)) + 1}")
+
+            # Phase timings
+            timings = result.get('timings', {})
+            if timings:
+                print()
+                print("  Phase Breakdown:")
+                for phase, duration in timings.items():
+                    print(f"    {phase:20s} {duration:.1f}s")
+                accounted = sum(timings.values())
+                print(f"    {'overhead':20s} {elapsed - accounted:.1f}s")
             print("=" * 60)
     else:
         print()
