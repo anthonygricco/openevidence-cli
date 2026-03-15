@@ -1150,6 +1150,12 @@ def main():
         action="store_true",
         help="Use direct API mode (no browser). Requires a prior browser run to capture API template.",
     )
+    parser.add_argument(
+        "--format",
+        choices=["text", "json", "markdown"],
+        default="text",
+        help="Output format: text (default), json, or markdown",
+    )
 
     args = parser.parse_args()
 
@@ -1193,33 +1199,58 @@ def main():
     if result:
         answer = result['answer']
 
-        # For non-streaming, non-progressive mode, print the full response
-        if not args.stream and not args.progressive:
-            print()
-            print("=" * 60)
-            print("OPENEVIDENCE RESPONSE [PRESENT VERBATIM - DO NOT SUMMARIZE]")
-            print("=" * 60)
-            print()
+        if args.format == "json":
+            # JSON output: structured data
+            import re
+            output = {
+                'question': args.question,
+                'answer': answer,
+                'citations': len(re.findall(r'\[\d+\]', answer)),
+                'cached': 'cache_hit' in result.get('timings', {}),
+                'timing': round(elapsed, 1),
+                'source': 'https://www.openevidence.com',
+            }
+            if result.get('images'):
+                output['images'] = result['images']
+            if result.get('screenshot'):
+                output['screenshot'] = result['screenshot']
+            print(json.dumps(output, indent=2))
+
+        elif args.format == "markdown":
+            # Markdown output: clean document
+            print(f"# OpenEvidence Response\n")
+            print(f"**Question:** {args.question}\n")
             print(answer)
-            print()
+            print(f"\n---\n*Source: [OpenEvidence](https://www.openevidence.com) | {elapsed:.1f}s*")
 
-        # Show saved files
-        if result.get('screenshot'):
-            print(f"Screenshot: {result['screenshot']}")
-        if result.get('images'):
-            print(f"Images saved: {', '.join(result['images'])}")
+        else:
+            # Default text format
+            if not args.stream and not args.progressive:
+                print()
+                print("=" * 60)
+                print("OPENEVIDENCE RESPONSE [PRESENT VERBATIM - DO NOT SUMMARIZE]")
+                print("=" * 60)
+                print()
+                print(answer)
+                print()
 
-        print("-" * 60)
-        print("Source: OpenEvidence (https://www.openevidence.com)")
-        print("-" * 60)
+            # Show saved files
+            if result.get('screenshot'):
+                print(f"Screenshot: {result['screenshot']}")
+            if result.get('images'):
+                print(f"Images saved: {', '.join(result['images'])}")
 
-        # Benchmark output
+            print("-" * 60)
+            print("Source: OpenEvidence (https://www.openevidence.com)")
+            print("-" * 60)
+
+        # Benchmark output (all formats)
         if args.benchmark:
             import re
             has_citations = bool(re.search(r'\[\d+\]', answer))
             citation_count = len(re.findall(r'\[\d+\]', answer))
             has_refs = 'references' in answer.lower() or 'et al.' in answer.lower()
-            mode_name = "turbo" if args.turbo else "fast" if args.fast else "normal"
+            mode_name = "api" if args.api else "turbo" if args.turbo else "fast" if args.fast else "normal"
             print()
             print("=" * 60)
             print("BENCHMARK RESULTS")
