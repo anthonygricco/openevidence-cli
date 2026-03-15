@@ -73,7 +73,23 @@ python3 ~/.openclaw/skills/openevidence/scripts/run.py ask_question.py \
 
 Falls back to browser mode automatically if API auth fails.
 
-### Batch Mode
+### Multiple Questions (Parallel)
+
+When the user sends 2+ OE questions at once, **always run them in parallel**:
+```bash
+python3 ~/.openclaw/skills/openevidence/scripts/parallel_ask.py \
+  "What is the role of pembrolizumab in NSCLC?" \
+  "Evidence for SBRT in oligometastatic disease?" \
+  "Hypofractionation in breast cancer outcomes?"
+```
+
+Runs up to 3 queries simultaneously. Each gets its own browser. Wall-clock time ≈ one query (~60s) instead of N × 60s serial. Results print as they complete.
+
+Options: `--max-parallel N` (default 3), `--file questions.txt`, `--debug`
+
+**Agent rule:** When you receive multiple `/oe` questions in a single message or rapid succession, ALWAYS use `parallel_ask.py` — never run them one at a time.
+
+### Batch Mode (File Input)
 
 Process multiple questions from a file:
 ```bash
