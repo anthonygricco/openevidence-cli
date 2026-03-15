@@ -2,162 +2,225 @@
 
 A Python CLI tool to query [OpenEvidence](https://www.openevidence.com) for evidence-based medical answers with citations from authoritative sources like NEJM, NCCN guidelines, and peer-reviewed literature.
 
-## Features
+## What's New in v2.0.0
 
-- **Evidence-based answers**: Get medical information backed by citations from authoritative sources
-- **Session persistence**: Authenticate once, query many times
-- **Multiple speed modes**: Normal (stealth), Fast, and Turbo modes
-- **Image extraction**: Save screenshots and figures from responses
-- **Headless operation**: Run without visible browser window
+- **`--reliable` mode** — auto-retries with escalating strategies (turbo → fast → normal). Recommended default.
+- **Parallel queries** — run multiple questions simultaneously, each in its own browser
+- **Response caching** — SHA256-keyed, 24h TTL. Cache hits return in <0.5s
+- **Progressive output** — `[PARTIAL]`/`[FINAL]` streaming for chat integrations
+- **Direct API mode** — bypass browser entirely using captured cookies
+- **Output formats** — text, JSON, or markdown
+- **Pre-flight checks** — connectivity health check, auth validation, stale lock cleanup
+- **HIPAA popup handling** — auto-dismisses verification dialogs
+
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 ## Requirements
 
 - Python 3.10+
 - macOS or Linux (Windows untested)
-- OpenEvidence account (free, requires Apple Sign-In)
+- OpenEvidence account (requires healthcare practitioner verification)
 
 ## Installation
 
 ### Standalone CLI
 
 ```bash
-# Clone the repository
 git clone https://github.com/anthonygricco/openevidence-cli.git
 cd openevidence-cli
 
-# The tool auto-creates a virtual environment on first run
+# Auto-creates a virtual environment on first run
 python3 scripts/run.py --help
 ```
 
 ### As a Claude Code Skill
 
-Install as a skill to use `/oe` commands directly in Claude Code:
-
 ```bash
-# Clone to your skills directory
 git clone https://github.com/anthonygricco/openevidence-cli.git ~/.claude/skills/openevidence
-
-# Claude Code will auto-detect the SKILL.md file
-# Use: /oe What is the evidence for...
 ```
 
-The skill is triggered by:
-- `/oe` followed by a medical question
-- Asking about "OpenEvidence" or "clinical evidence"
-- Requesting "guideline recommendations"
+Claude Code auto-detects the `SKILL.md` file. Use `/oe` followed by any medical question.
 
 ## Quick Start
 
-### 1. Authenticate (one-time setup)
+### 1. Authenticate (one-time)
 
 ```bash
 python3 scripts/run.py auth_manager.py setup
 ```
 
-A browser window opens. Sign in with Apple and complete the login. Your session is saved for future use.
+A browser window opens. Sign in and complete login. Session is saved for future use.
 
 ### 2. Ask a question
 
 ```bash
-# Fast mode (recommended)
+# Recommended: reliable mode (auto-retries if needed)
 python3 scripts/run.py ask_question.py \
   --question "What is the evidence for adjuvant osimertinib in EGFR-mutated NSCLC?" \
-  --fast
+  --reliable
 
-# Turbo mode (maximum speed)
+# Fast single query
 python3 scripts/run.py ask_question.py \
-  --question "Your question here" \
+  --question "SBRT outcomes in early-stage NSCLC?" \
   --turbo
+
+# Multiple questions in parallel
+python3 scripts/parallel_ask.py \
+  "Role of pembrolizumab in NSCLC?" \
+  "Evidence for SBRT in oligometastatic disease?" \
+  "Hypofractionation in breast cancer outcomes?"
 ```
 
 ## Usage
 
-### Authentication Commands
-
-```bash
-# Initial setup (opens browser)
-python3 scripts/run.py auth_manager.py setup
-
-# Check status
-python3 scripts/run.py auth_manager.py status
-
-# Re-authenticate
-python3 scripts/run.py auth_manager.py reauth
-
-# Clear saved auth
-python3 scripts/run.py auth_manager.py clear
-
-# Validate saved auth works
-python3 scripts/run.py auth_manager.py validate
-```
-
-### Query Commands
-
-```bash
-# Basic query (normal mode - human-like typing)
-python3 scripts/run.py ask_question.py --question "Your medical question"
-
-# Fast mode (~5-8 seconds)
-python3 scripts/run.py ask_question.py --question "..." --fast
-
-# Turbo mode (~3-5 seconds, may be less reliable)
-python3 scripts/run.py ask_question.py --question "..." --turbo
-
-# Save screenshot and images
-python3 scripts/run.py ask_question.py --question "..." --save-images --fast
-
-# Debug mode (show browser)
-python3 scripts/run.py ask_question.py --question "..." --show-browser
-```
-
 ### Speed Modes
 
-| Mode | Flag | Response Time | Reliability |
-|------|------|---------------|-------------|
-| Normal | (default) | ~15-20s | Highest |
-| Fast | `--fast` | ~5-8s | High |
-| Turbo | `--turbo` | ~3-5s | Good |
+| Mode | Flag | Overhead | Reliability | Notes |
+|------|------|----------|-------------|-------|
+| Normal | *(default)* | ~15-20s | Highest | Human-like typing |
+| Fast | `--fast` | ~5-8s | High | Fills input directly |
+| Turbo | `--turbo` | ~3-5s | Good | Minimal delays |
+| Reliable | `--reliable` | ~3-20s | Highest | Starts turbo, escalates on failure |
+
+> **Note:** OE server generation takes ~55-60s regardless of mode. Overhead is local browser time only.
+
+### Query Options
+
+```bash
+# Reliable mode (recommended)
+python3 scripts/run.py ask_question.py -q "..." --reliable
+
+# With JSON output
+python3 scripts/run.py ask_question.py -q "..." --turbo --format json
+
+# Markdown output
+python3 scripts/run.py ask_question.py -q "..." --fast --format markdown
+
+# Progressive streaming (for chat integrations)
+python3 scripts/run.py ask_question.py -q "..." --turbo --progressive
+
+# Direct API mode (no browser, requires prior browser run to capture template)
+python3 scripts/run.py ask_question.py -q "..." --api
+
+# Custom timeout
+python3 scripts/run.py ask_question.py -q "..." --timeout 180
+
+# Skip cache
+python3 scripts/run.py ask_question.py -q "..." --no-cache
+
+# Performance benchmarking
+python3 scripts/run.py ask_question.py -q "..." --turbo --benchmark
+
+# Debug (visible browser)
+python3 scripts/run.py ask_question.py -q "..." --show-browser --debug
+
+# Save screenshots and images
+python3 scripts/run.py ask_question.py -q "..." --save-images
+```
+
+### Parallel Queries
+
+Run 2+ questions simultaneously, each in its own browser instance:
+
+```bash
+# From command line arguments
+python3 scripts/parallel_ask.py \
+  "Question one?" \
+  "Question two?" \
+  "Question three?"
+
+# From a file (one question per line)
+python3 scripts/parallel_ask.py --file questions.txt
+
+# Control concurrency
+python3 scripts/parallel_ask.py --max-parallel 5 --file questions.txt
+```
+
+Wall-clock time ≈ one query (~60s) instead of N × 60s serial.
+
+### Batch Mode (Serial)
+
+Process questions sequentially from a file:
+
+```bash
+python3 scripts/run.py ask_question.py --batch questions.txt --turbo --format json
+```
+
+File format: one question per line, `#` for comments.
+
+### Authentication
+
+```bash
+python3 scripts/run.py auth_manager.py setup      # Initial setup (opens browser)
+python3 scripts/run.py auth_manager.py status      # Check auth status
+python3 scripts/run.py auth_manager.py reauth      # Re-authenticate
+python3 scripts/run.py auth_manager.py validate    # Validate saved cookies
+python3 scripts/run.py auth_manager.py clear       # Clear saved auth
+```
+
+### Caching
+
+Responses are cached by default (SHA256 of lowercased question, 24h TTL):
+
+```bash
+# Skip cache for fresh results
+python3 scripts/run.py ask_question.py -q "..." --no-cache
+
+# Custom TTL (in seconds)
+python3 scripts/run.py ask_question.py -q "..." --cache-ttl 3600
+```
+
+Cache is stored in `data/cache/`. First hit: ~60s. Cached hit: <0.5s.
 
 ## Example Output
 
 ```
-[FAST] Asking: What is the evidence for adjuvant osimertinib in EGFR-mutated NSCLC?
+$ python3 scripts/run.py ask_question.py \
+    -q "What is the evidence for proton therapy in pediatric CNS tumors?" \
+    --reliable --benchmark
+
+[RELIABLE] Attempt 1/3 (turbo)
+[TURBO] Asking: What is the evidence for proton therapy in pediatric CNS tumors?
   Opening OpenEvidence...
-  Looking for chat input...
-  Found input: textarea[placeholder*="Ask"]
-  Entering question (fast)...
-  Submitting...
+  Entering question...
   Waiting for response...
-  Got response (4521 chars)
+  Got response (6054 chars, 11 citations)
 
 ============================================================
 OPENEVIDENCE RESPONSE
 ============================================================
 
-The ADAURA trial (Wu et al., NEJM 2020) demonstrated that adjuvant
-osimertinib significantly improved disease-free survival in patients
-with stage IB-IIIA EGFR-mutated NSCLC after complete tumor resection...
+Proton beam therapy (PBT) has emerged as a preferred radiation modality
+for many pediatric CNS tumors due to its superior dose conformality
+and reduced integral dose to developing normal tissues...
 
-[Full response with citations]
+[Full response with 11 citations]
 
 ------------------------------------------------------------
 Source: OpenEvidence (https://www.openevidence.com)
 ------------------------------------------------------------
+
+Performance: turbo mode | 49.5s total | 6054 chars | 11 citations | complete
 ```
 
 ## Project Structure
 
 ```
-openevidence/
+openevidence-cli/
 ├── scripts/
-│   ├── run.py           # Entry point, handles venv setup
-│   ├── auth_manager.py  # Authentication management
-│   ├── ask_question.py  # Query interface
-│   ├── browser_utils.py # Browser automation utilities
-│   └── config.py        # Configuration and selectors
-├── data/                # Auth data (gitignored)
+│   ├── run.py              # Entry point, manages venv
+│   ├── ask_question.py     # Core query engine (946 lines)
+│   ├── parallel_ask.py     # Parallel multi-query runner
+│   ├── auth_manager.py     # Authentication management
+│   ├── browser_utils.py    # Stealth browser utilities
+│   └── config.py           # Selectors, timeouts, modes
+├── data/                   # Auth + cache data (gitignored)
+│   ├── state.json          # Saved cookies
+│   ├── api_template.json   # Captured API request template
+│   └── cache/              # Response cache
+├── SKILL.md                # Claude Code skill documentation
+├── CHANGELOG.md            # Version history
 ├── requirements.txt
-├── SKILL.md            # Claude Code skill documentation
 └── README.md
 ```
 
@@ -166,32 +229,35 @@ openevidence/
 | Problem | Solution |
 |---------|----------|
 | "Not authenticated" | Run `auth_manager.py setup` |
-| No response / timeout | Try `--show-browser` to debug |
-| Browser crashes | Run `auth_manager.py reauth` |
-| Slow responses | Use `--fast` or `--turbo` flag |
+| No response / timeout | Try `--show-browser --debug` to see what's happening |
+| Browser won't launch | Stale locks — `--reliable` mode auto-cleans these |
+| Slow responses | OE server generation is ~55-60s; local overhead is minimal in turbo |
+| HIPAA popup blocking | Auto-handled in v2.0.0; update if on older version |
+| Expired cookies | Run `auth_manager.py validate`, then `reauth` if needed |
+| API mode returns empty | Known issue — use browser mode (default) instead |
 
 ## Security Notes
 
 - Authentication data is stored locally in `data/` (gitignored)
 - Never commit your `data/` directory
-- Session cookies may expire after days/weeks - re-run setup if needed
+- Session cookies expire after weeks/months — re-run setup if needed
+- Pre-flight auth validation warns early on expired sessions
 
 ## Limitations
 
-- Requires manual Apple Sign-In for initial authentication
+- Requires manual sign-in for initial authentication
 - CSS selectors may break if OpenEvidence updates their UI
+- API mode content extraction has known issues (browser mode is reliable)
 - Rate limits may apply on OpenEvidence side
 
 ## License
 
-MIT License - see [LICENSE](LICENSE)
+MIT License — see [LICENSE](LICENSE)
 
 ## Disclaimer
 
-**Account Eligibility:** OpenEvidence accounts are only available to verified healthcare practitioners. The service supports multiple authentication methods including Apple Sign-In, Google Sign-In, and institutional credentials. You must have a valid OpenEvidence account to use this tool.
+**Account Eligibility:** OpenEvidence accounts are only available to verified healthcare practitioners. You must have a valid OpenEvidence account to use this tool.
 
-**Terms of Service Notice:** This tool uses browser automation to interact with OpenEvidence. This method of access may violate OpenEvidence's Terms of Service. The authors of this tool are not affiliated with OpenEvidence, and OpenEvidence has not authorized or endorsed this tool. Use at your own risk and discretion.
+**Terms of Service Notice:** This tool uses browser automation to interact with OpenEvidence. This method of access may violate OpenEvidence's Terms of Service. The authors are not affiliated with or endorsed by OpenEvidence. Use at your own risk.
 
-**Medical Disclaimer:** This tool is for educational and research purposes only. Always verify medical information with qualified healthcare professionals. The authors are not responsible for any medical decisions made based on information obtained through this tool.
-
-**Liability:** The authors provide this tool "as is" without warranty. You assume all responsibility for your use of this tool, including any consequences arising from potential Terms of Service violations.
+**Medical Disclaimer:** For educational and research purposes only. Always verify medical information with qualified healthcare professionals.
