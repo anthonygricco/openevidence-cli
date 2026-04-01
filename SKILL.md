@@ -11,238 +11,92 @@ triggers:
 
 # OpenEvidence Skill
 
-Query OpenEvidence (https://www.openevidence.com) for evidence-based medical answers with citations from NEJM, NCCN guidelines, and other authoritative sources.
+Use OpenEvidence for evidence-backed medical answers when the user explicitly wants OpenEvidence or a guideline/journal-grounded answer.
 
-## When to Use
+## When To Use
 
-- User types `/oe` followed by a question
-- User explicitly mentions "OpenEvidence"
-- User asks for clinical evidence, guideline recommendations
-- Medical questions requiring authoritative, cited answers
+- User types `/oe`
+- User explicitly asks for OpenEvidence
+- User wants clinical evidence, guideline language, or source-backed medical synthesis
 
-## Quick Start
+## Command Rule
 
-### First-Time Setup (One-Time)
-
-```bash
-# Authenticate via Apple Sign-In
-python3 ~/.openclaw/skills/openevidence/scripts/run.py auth_manager.py setup
-```
-
-A browser window opens. Click "Sign in with Apple" and complete login. Session is saved for future use.
-
-### Ask a Question
+Always use the wrapper:
 
 ```bash
-python3 ~/.openclaw/skills/openevidence/scripts/run.py ask_question.py \
-  --question "What is the evidence for adjuvant osimertinib in EGFR-mutated NSCLC?" --reliable
+python3 <SKILL_DIR>/scripts/run.py auth_manager.py status
+python3 <SKILL_DIR>/scripts/run.py ask_question.py --question "..."
 ```
 
-**Use `--reliable` flag** (recommended default). Auto-retries with escalating strategies (turbo → fast → normal) if the first attempt fails. Up to 3 total attempts.
+Replace `<SKILL_DIR>` with the installed OpenEvidence skill directory for the current runtime. Do not hard-code `~/.claude/skills` or `~/.codex/skills`.
 
-## Usage Patterns
+## Supported Commands
 
-### Basic Query (`/oe`)
-
-User says:
-> /oe What's the survival benefit of hypofractionated whole breast radiation?
-
-Run:
-```bash
-python3 ~/.openclaw/skills/openevidence/scripts/run.py ask_question.py \
-  --question "What's the survival benefit of hypofractionated whole breast radiation?" --reliable
-```
-
-### Progressive Output (for Telegram/Chat Integration)
-
-For faster time-to-answer in chat contexts, use `--progressive` to get partial results:
-```bash
-python3 ~/.openclaw/skills/openevidence/scripts/run.py ask_question.py \
-  --question "..." --turbo --progressive
-```
-
-Output uses `[PARTIAL]...[/PARTIAL]` and `[FINAL]...[/FINAL]` delimiters. First partial appears at ~8-10s, with updates every ~15s.
-
-### Direct API Mode (Fastest)
-
-After a browser run captures the API template, bypass the browser entirely:
-```bash
-python3 ~/.openclaw/skills/openevidence/scripts/run.py ask_question.py \
-  --question "..." --api
-```
-
-Falls back to browser mode automatically if API auth fails.
-
-### Multiple Questions (Parallel)
-
-When the user sends 2+ OE questions at once, **always run them in parallel**:
-```bash
-python3 ~/.openclaw/skills/openevidence/scripts/parallel_ask.py \
-  "What is the role of pembrolizumab in NSCLC?" \
-  "Evidence for SBRT in oligometastatic disease?" \
-  "Hypofractionation in breast cancer outcomes?"
-```
-
-Runs up to 3 queries simultaneously. Each gets its own browser. Wall-clock time ≈ one query (~60s) instead of N × 60s serial. Results print as they complete.
-
-Options: `--max-parallel N` (default 3), `--file questions.txt`, `--debug`
-
-**Agent rule:** When you receive multiple `/oe` questions in a single message or rapid succession, ALWAYS use `parallel_ask.py` — never run them one at a time.
-
-### Batch Mode (File Input)
-
-Process multiple questions from a file:
-```bash
-python3 ~/.openclaw/skills/openevidence/scripts/run.py ask_question.py \
-  --batch questions.txt --turbo --format json
-```
-
-File format: one question per line, `#` comments supported.
-
-### Debug Mode (Show Browser)
-
-If something isn't working, see what's happening:
-```bash
-python3 ~/.openclaw/skills/openevidence/scripts/run.py ask_question.py \
-  --question "..." --show-browser
-```
-
-## Commands Reference
-
-### Authentication
+Authentication:
 
 ```bash
-# Initial setup (opens browser for Apple Sign-In)
-python3 scripts/run.py auth_manager.py setup
-
-# Check authentication status
-python3 scripts/run.py auth_manager.py status
-
-# Re-authenticate (clears old session, starts fresh)
-python3 scripts/run.py auth_manager.py reauth
-
-# Clear all authentication data
-python3 scripts/run.py auth_manager.py clear
-
-# Validate saved auth works
-python3 scripts/run.py auth_manager.py validate
+python3 <SKILL_DIR>/scripts/run.py auth_manager.py setup
+python3 <SKILL_DIR>/scripts/run.py auth_manager.py status
+python3 <SKILL_DIR>/scripts/run.py auth_manager.py validate
+python3 <SKILL_DIR>/scripts/run.py auth_manager.py reauth
+python3 <SKILL_DIR>/scripts/run.py auth_manager.py clear
+python3 <SKILL_DIR>/scripts/run.py auth_manager.py import-helium
 ```
 
-### Querying
+Queries:
 
 ```bash
-# Turbo mode (fastest browser, ~3-5s overhead + OE generation)
-python3 scripts/run.py ask_question.py --question "..." --turbo
-
-# Direct API mode (no browser, ~1s overhead + OE generation)
-python3 scripts/run.py ask_question.py --question "..." --api
-
-# Progressive output (partial results every ~15s)
-python3 scripts/run.py ask_question.py --question "..." --turbo --progressive
-
-# Fast mode (~5-8s, more reliable)
-python3 scripts/run.py ask_question.py --question "..." --fast
-
-# Normal mode (human-like typing, ~15-20s)
-python3 scripts/run.py ask_question.py --question "..."
-
-# Output formats
-python3 scripts/run.py ask_question.py --question "..." --format json
-python3 scripts/run.py ask_question.py --question "..." --format markdown
-
-# Custom timeout (default 120s)
-python3 scripts/run.py ask_question.py --question "..." --timeout 180
-
-# Bypass cache
-python3 scripts/run.py ask_question.py --question "..." --no-cache
-
-# Batch mode
-python3 scripts/run.py ask_question.py --batch questions.txt --turbo
-
-# Save screenshot and extract figures/images
-python3 scripts/run.py ask_question.py --question "..." --save-images --turbo
-
-# Benchmark mode (print performance metrics)
-python3 scripts/run.py ask_question.py --question "..." --turbo --benchmark
+python3 <SKILL_DIR>/scripts/run.py ask_question.py --question "..." --reliable --format text
+python3 <SKILL_DIR>/scripts/run.py ask_question.py --question "..." --turbo --format json
+python3 <SKILL_DIR>/scripts/run.py ask_question.py --question "..." --fast --show-browser
+python3 <SKILL_DIR>/scripts/run.py ask_question.py --batch questions.txt --reliable --format json
+python3 <SKILL_DIR>/scripts/parallel_ask.py --file questions.txt --max-parallel 3 --reliable
+python3 <SKILL_DIR>/scripts/run.py browser_launch_smoke_test.py
 ```
 
-## Speed Modes
+## Flags
 
-| Mode | Flag | Overhead | Best For |
-|------|------|----------|----------|
-| **Reliable** | `--reliable` | ~3-5s (up to 3 tries) | **Recommended default.** Auto-retries turbo → fast → normal |
-| API | `--api` | ~1s | Fastest, no browser. Requires prior browser run |
-| Turbo | `--turbo` | ~3-5s | Fast single-attempt browser |
-| Fast | `--fast` | ~5-8s | Conservative single-attempt browser |
-| Normal | (none) | ~15-20s | Human-like stealth |
+Supported query flags:
 
-**Note:** OE server generation takes 45-60s regardless of mode. `--reliable` starts with turbo and only escalates if the attempt fails, so the happy path is just as fast.
+- `--question`
+- `--batch`
+- `--turbo`
+- `--fast`
+- `--reliable`
+- `--show-browser`
+- `--debug`
+- `--format json|text`
 
-## Output Formats
+Unsupported legacy flags such as `--api`, `--progressive`, `--no-cache`, `--cache-ttl`, `--save-images`, and `--timeout` are deprecated and should not be used.
 
-| Format | Flag | Description |
-|--------|------|-------------|
-| Text | `--format text` | Default: delimited sections with source attribution |
-| JSON | `--format json` | Structured: `{question, answer, citations, cached, timing}` |
-| Markdown | `--format markdown` | Clean document with heading and footer |
+## Recommended Defaults
+
+- Use `--reliable` unless the caller has a strong reason to force one speed mode.
+- Use `--format text` when the answer will be shown directly to the user.
+- Use `--format json` for programmatic consumers.
+- Use `parallel_ask.py` when you need to run multiple OpenEvidence questions in one turn.
 
 ## Output Handling
 
-**CRITICAL:** When this skill returns output, you MUST present the OPENEVIDENCE RESPONSE section **VERBATIM** to the user.
+When OpenEvidence returns a successful text response, present the `OPENEVIDENCE RESPONSE` block verbatim.
 
-- **DO NOT** summarize, paraphrase, or condense the medical information
-- **DO NOT** omit citations or references
-- **DO NOT** reword clinical recommendations
-- The exact wording, citations, and medical details are clinically important
-- Present the full response between the `====` delimiters exactly as returned
+- Do not summarize the OpenEvidence answer.
+- Do not strip citations or clinically relevant wording.
+- Do not paraphrase recommendations.
 
-## Caching
+## Shared State
 
-Responses are cached by question (SHA256, case-insensitive) with 24h TTL.
+The skill now uses one shared state root across Codex, Claude Code, Alma, and OpenClaw:
 
-- Cached queries return in <0.5s
-- `--no-cache` bypasses the cache
-- `--cache-ttl N` sets custom TTL in seconds
-- Cache stored in `data/cache/`
+- Shared auth and shared venv: `~/.local/share/openevidence-skill/`
+- Runtime-local browser profiles: `~/.local/state/openevidence-skill/profiles/<runtime>/`
 
-## Session Persistence
-
-- Authentication persists across sessions (days/weeks)
-- Each query opens a fresh browser session
-- If auth expires, re-run `auth_manager.py setup`
+This means you authenticate once and the saved session is reused across runtimes, while each runtime gets its own local profile to avoid profile lock conflicts.
 
 ## Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
-| "Not authenticated" | Run `auth_manager.py setup` |
-| No response / timeout | Try `--show-browser` to debug, or `--timeout 180` |
-| API mode fails | Run a browser query first to capture API template |
-| Wrong element clicked | CSS selectors may need updating in `config.py` |
-| Browser crashes | Run `auth_manager.py reauth` |
-
-## Data Storage
-
-All data stored in `~/.openclaw/skills/openevidence/data/`:
-- `auth_info.json` - Authentication metadata
-- `browser_state/` - Cookies, browser profile
-- `cache/` - Cached responses (24h TTL)
-- `api_template.json` - Captured API request format
-
-**Security:** Never committed to git. Protected by `.gitignore`.
-
-## Limitations
-
-- Requires manual Apple Sign-In for initial setup
-- OE server generation takes 45-60s for complete answers (use `--progressive` for early results)
-- Rate limits may apply on OpenEvidence side
-- CSS selectors may break if OpenEvidence updates their UI
-- API mode requires a prior browser run to capture the request template
-
-## Integration Notes
-
-This skill works in both:
-- **Claude Code** - Invoked via `/oe` or skill detection
-- **Alma** - Symlinked to `~/.config/alma/skills/openevidence`
-
-Both share the same authentication state.
+- If auth looks stale, run `python3 <SKILL_DIR>/scripts/run.py auth_manager.py validate`
+- If validation fails, run `python3 <SKILL_DIR>/scripts/run.py auth_manager.py reauth`
+- If you are already logged into OpenEvidence in Helium, run `python3 <SKILL_DIR>/scripts/run.py auth_manager.py import-helium`
+- If browser launch fails in a sandboxed app, keep the default bundled Chromium and do not force system Chrome
+- Use `python3 <SKILL_DIR>/scripts/run.py browser_launch_smoke_test.py --show-browser` for a lightweight launch check

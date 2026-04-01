@@ -16,8 +16,8 @@ REPO_ROOT = _repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.openevidence_skill.cli import main_ask_question
+from tools.openevidence_skill.cli import main_browser_smoke_test
 
 
 if __name__ == "__main__":
-    sys.exit(main_ask_question(__file__, sys.argv[1:]))
+    sys.exit(main_browser_smoke_test(__file__, sys.argv[1:]))
