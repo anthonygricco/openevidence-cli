@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from .artifacts import ArtifactOptions, capture_query_artifacts
 from .auth import (
     attempt_silent_relogin,
     is_logged_in,
@@ -21,15 +22,16 @@ from .browser import (
     PAGE_LOAD_TIMEOUT,
     QUERY_INPUT_SELECTORS,
     QUERY_TIMEOUT,
-    SUBMIT_BUTTON_SELECTORS,
     StealthUtils,
     dismiss_popups,
+    find_submit_button,
     find_visible_element,
     load_playwright,
 )
 from .config import RuntimeContext
 from .diagnostics import write_failure_bundle
 from .extract import classify_timeout, collect_response_snapshot, normalize_text
+from .render import RenderOptions, format_chatwise_result, format_text_result
 
 
 MODE_SETTINGS = {
@@ -70,6 +72,8 @@ class QueryOptions:
     show_browser: bool
     debug: bool
     profile_dir: Path | None = None
+    artifacts: ArtifactOptions = field(default_factory=ArtifactOptions)
+    render: RenderOptions = field(default_factory=RenderOptions)
 
 
 def answer_quality(answer: str) -> tuple[bool, int]:
@@ -136,15 +140,19 @@ def _submit_question(page: object, input_selector: str, question: str, use_human
         page.fill(input_selector, question)
     StealthUtils.random_delay(150, 300)
 
-    for selector in SUBMIT_BUTTON_SELECTORS:
+    button = find_submit_button(page, input_selector)
+    if button is not None:
         try:
-            button = page.query_selector(selector)
-            if button and button.is_visible():
-                button.click()
-                return
+            button.click()
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    for key in ("Meta+Enter", "Control+Enter", "Enter"):
+        try:
+            page.keyboard.press(key)
+            return
         except Exception:  # noqa: BLE001
             continue
-    page.keyboard.press("Enter")
 
 
 def _wait_for_response(page: object, settings: dict[str, object], debug: bool = False) -> tuple[str | None, dict[str, object]]:
@@ -157,11 +165,18 @@ def _wait_for_response(page: object, settings: dict[str, object], debug: bool = 
     first_seen_at: float | None = None
     last_change_at: float | None = None
     snapshot: dict[str, object] = {}
+    high_demand_polls = 0
 
     while time.time() < deadline:
         now = time.time()
         dismiss_popups(page, debug=debug)
         snapshot = collect_response_snapshot(page)
+        if snapshot.get("high_demand_visible") and not snapshot.get("loading_visible") and not snapshot.get("candidates"):
+            high_demand_polls += 1
+            if high_demand_polls >= 3:
+                return None, snapshot
+        else:
+            high_demand_polls = 0
         selected = snapshot.get("selected_candidate")
         if selected is not None:
             normalized = normalize_text(selected.text)
@@ -189,6 +204,13 @@ def _wait_for_response(page: object, settings: dict[str, object], debug: bool = 
             stable_count = 0
         time.sleep(1)
     return None, snapshot
+
+
+def _timeout_error_message(snapshot: dict[str, object]) -> str:
+    reason = classify_timeout(snapshot)
+    if reason == "service-overloaded":
+        return "OpenEvidence is reporting exceptionally high demand. Retry again later."
+    return f"OpenEvidence timed out waiting for a stable response ({reason})."
 
 
 def run_single_query(ctx: RuntimeContext, question: str, options: QueryOptions) -> dict[str, object]:
@@ -258,6 +280,7 @@ def run_single_query(ctx: RuntimeContext, question: str, options: QueryOptions) 
 
         answer, snapshot = _wait_for_response(page, MODE_SETTINGS[options.mode], debug=options.debug)
         if answer:
+            artifacts = capture_query_artifacts(page, ctx, question, snapshot, options.artifacts)
             BrowserFactory.save_state(context, ctx, options.profile_dir or ctx.local_profile_dir)
             if options.profile_dir is None or options.profile_dir == ctx.local_profile_dir:
                 BrowserFactory.cleanup_runtime_artifacts(ctx.local_profile_dir)
@@ -275,6 +298,7 @@ def run_single_query(ctx: RuntimeContext, question: str, options: QueryOptions) 
                 "source": "OpenEvidence",
                 "runtime_id": ctx.runtime_id,
                 "mode": options.mode,
+                "artifacts": artifacts,
             }
 
         diagnostics_dir = write_failure_bundle(
@@ -293,7 +317,7 @@ def run_single_query(ctx: RuntimeContext, question: str, options: QueryOptions) 
         return {
             "ok": False,
             "question": question,
-            "error": f"OpenEvidence timed out waiting for a stable response ({classify_timeout(snapshot)}).",
+            "error": _timeout_error_message(snapshot),
             "diagnostics_dir": str(diagnostics_dir),
         }
     except Exception as exc:  # noqa: BLE001
@@ -343,6 +367,8 @@ def run_query_with_retries(ctx: RuntimeContext, question: str, options: QueryOpt
             show_browser=options.show_browser,
             debug=options.debug,
             profile_dir=options.profile_dir,
+            artifacts=options.artifacts,
+            render=options.render,
         )
         last_result = run_single_query(ctx, question, attempt_options)
         if last_result.get("ok"):
@@ -353,17 +379,13 @@ def run_query_with_retries(ctx: RuntimeContext, question: str, options: QueryOpt
     return best_success or last_result or {"ok": False, "question": question, "error": "Unknown query failure."}
 
 
-def format_text_result(result: dict[str, object]) -> str:
-    if not result.get("ok"):
-        return json.dumps(result, indent=2)
-    return (
-        "=" * 60
-        + "\nOPENEVIDENCE RESPONSE [PRESENT VERBATIM - DO NOT SUMMARIZE]\n"
-        + "=" * 60
-        + "\n\n"
-        + str(result["answer"])
-        + "\n\n"
-        + "-" * 60
-        + "\nSource: OpenEvidence (https://www.openevidence.com)\n"
-        + "-" * 60
-    )
+__all__ = [
+    "QueryOptions",
+    "answer_quality",
+    "sanitize_answer_text",
+    "response_ready_to_return",
+    "run_query_with_retries",
+    "run_single_query",
+    "format_text_result",
+    "format_chatwise_result",
+]

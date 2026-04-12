@@ -176,7 +176,7 @@ def ensure_shared_venv(ctx: RuntimeContext) -> Path:
 
     pip = _venv_pip(ctx)
     python = _venv_python(ctx)
-    requirements = ctx.repo_root / "tools" / "openevidence_skill" / "requirements.txt"
+    requirements = ctx.repo_root / "tools" / "openevidence_skill_v2" / "requirements.txt"
     patchright_ok = subprocess.run(
         [str(pip), "show", "patchright"],
         capture_output=True,

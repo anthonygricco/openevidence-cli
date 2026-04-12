@@ -22,6 +22,10 @@ IGNORED_TEXT_FRAGMENTS = (
     "log in",
     "sign in",
 )
+HIGH_DEMAND_TEXT_FRAGMENTS = (
+    "exceptionally high demand",
+    "scale our systems",
+)
 
 
 @dataclass(frozen=True)
@@ -79,6 +83,8 @@ def classify_timeout(snapshot: dict[str, object] | None) -> str:
         return "timeout-without-snapshot"
     if snapshot.get("login_visible"):
         return "login-required"
+    if snapshot.get("high_demand_visible"):
+        return "service-overloaded"
     if snapshot.get("loading_visible"):
         return "loading-never-settled"
     if snapshot.get("input_visible") and not snapshot.get("candidates"):
@@ -102,6 +108,10 @@ def collect_response_snapshot(page: object) -> dict[str, object]:
       };
       const textOf = (element) => (element && element.innerText ? element.innerText.trim() : "");
       const candidates = [];
+      const alertTexts = Array.from(document.querySelectorAll('[role="alert"], .MuiAlert-message, [class*="Alert"]'))
+        .filter((element) => isVisible(element))
+        .map((element) => textOf(element))
+        .filter((text) => text);
       for (const selector of payload.responseSelectors) {
         const elements = Array.from(document.querySelectorAll(selector));
         elements.forEach((element, index) => {
@@ -122,12 +132,19 @@ def collect_response_snapshot(page: object) -> dict[str, object]:
       const loginTextVisible = Array.from(document.querySelectorAll("button,a")).some((element) => (
         isVisible(element) && textOf(element).toLowerCase().includes("log in")
       ));
+      const bodyText = (document.body && document.body.innerText ? document.body.innerText.toLowerCase() : "");
+      const highDemandVisible = alertTexts.some((text) => {
+        const lowered = text.toLowerCase();
+        return lowered.includes("exceptionally high demand") || lowered.includes("scale our systems");
+      }) || bodyText.includes("exceptionally high demand");
       return {
         url: window.location.href,
         candidates,
         loading_visible: anyVisible(payload.loadingSelectors),
         login_visible: loginTextVisible || anyVisible(payload.loginSelectors),
         input_visible: anyVisible(payload.inputSelectors),
+        alert_texts: alertTexts,
+        high_demand_visible: highDemandVisible,
       };
     }
     """

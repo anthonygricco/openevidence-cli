@@ -32,11 +32,13 @@ LOGIN_BUTTON_SELECTORS = [
     '[data-testid="login-button"]',
 ]
 SUBMIT_BUTTON_SELECTORS = [
-    'button[type="submit"]',
-    'button:has-text("Send")',
+    'button[aria-label="Submit question"]',
+    'button[aria-label*="Submit"]',
+    'button[aria-label*="submit"]',
     'button[aria-label="Send"]',
+    'button[aria-label*="Send"]',
     '[data-testid="send-button"]',
-    "button:has(svg)",
+    'button[type="submit"]',
 ]
 POPUP_DISMISS_SELECTORS = [
     'button:has-text("OK")',
@@ -238,6 +240,78 @@ def find_visible_element(page: object, selectors: list[str], timeout_ms: int = E
         except Exception:  # noqa: BLE001
             continue
     return None, None
+
+
+def find_submit_button(page: object, input_selector: str) -> object | None:
+    payload = {
+        "inputSelector": input_selector,
+        "submitSelectors": SUBMIT_BUTTON_SELECTORS,
+    }
+    script = """
+    (payload) => {
+      const input = document.querySelector(payload.inputSelector);
+      if (!input) return null;
+
+      const isVisible = (element) => {
+        if (!element) return false;
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style && style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      };
+
+      const textOf = (element) => (element && element.innerText ? element.innerText.trim() : "");
+      const inputRect = input.getBoundingClientRect();
+      const seen = new Set();
+      let best = null;
+
+      const scoreButton = (element, selector, index) => {
+        if (!isVisible(element) || element.disabled) return;
+        const rect = element.getBoundingClientRect();
+        const aria = (element.getAttribute("aria-label") || "").toLowerCase();
+        const text = textOf(element).toLowerCase();
+        const type = (element.getAttribute("type") || "").toLowerCase();
+        const deltaY = Math.abs((rect.y + rect.height / 2) - (inputRect.y + inputRect.height / 2));
+        const distancePenalty = Math.abs((rect.x + rect.width / 2) - (inputRect.x + inputRect.width));
+        let score = 0;
+
+        if (aria.includes("submit question")) score += 2000;
+        else if (aria.includes("submit")) score += 1200;
+        else if (aria.includes("send")) score += 900;
+        else if (text.includes("send")) score += 700;
+        if (type === "submit") score += 300;
+        if (rect.x >= inputRect.x + inputRect.width - 160) score += 250;
+        if (rect.x >= inputRect.x) score += 80;
+        if (deltaY <= 80) score += 160;
+        if (deltaY <= 24) score += 120;
+        score -= Math.round(distancePenalty);
+
+        if (best === null || score > best.score) {
+          best = { selector, index, score };
+        }
+      };
+
+      for (const selector of payload.submitSelectors) {
+        const elements = Array.from(document.querySelectorAll(selector));
+        elements.forEach((element, index) => {
+          const key = selector + "::" + index + "::" + (element.getAttribute("aria-label") || "") + "::" + textOf(element);
+          if (seen.has(key)) return;
+          seen.add(key);
+          scoreButton(element, selector, index);
+        });
+      }
+      return best ? { selector: best.selector, index: best.index } : null;
+    }
+    """
+    try:
+        target = page.evaluate(script, payload)
+    except Exception:  # noqa: BLE001
+        return None
+    if not target:
+        return None
+    try:
+        return page.locator(str(target["selector"])).nth(int(target["index"]))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def dismiss_popups(page: object, debug: bool = False) -> None:

@@ -5,6 +5,8 @@ __all__ = [
     "bootstrap",
     "browser",
     "auth",
+    "artifacts",
+    "render",
     "extract",
     "diagnostics",
     "query",

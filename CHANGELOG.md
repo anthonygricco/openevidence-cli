@@ -2,6 +2,34 @@
 
 All notable changes to the OpenEvidence CLI skill.
 
+## [v2.1.0] - 2026-04-12
+
+### Features
+- **Automatic artifact capture**: `ask_question.py` now saves the final answer screenshot and rendered inline figures (NCCN flowcharts, Kaplan-Meier curves, trial figures) by default. No flags required.
+- **HTML gallery rendering**: captured figures are written alongside an `index.html` gallery. Text output ends with an `ACTION REQUIRED` block containing an `open` command to launch the gallery in the browser.
+- **`chatwise` output format** (`--format chatwise`): markdown output tailored for ChatWise clients, with references and artifact links inlined.
+- **Artifact embedding** (`--embed-artifacts`, `--max-embed-bytes`): inline small artifact PNGs as data URIs directly in `chatwise` markdown.
+- **Full-page screenshot** (`--save-page-screenshot`): optional full-page capture after answer stabilization.
+
+### Flags
+- New: `--save-inline-images` / `--no-save-inline-images` (default on), `--save-answer-screenshot` / `--no-save-answer-screenshot` (default on), `--save-page-screenshot`, `--artifact-dir`, `--embed-artifacts`, `--max-embed-bytes`
+- Re-enabled as aliases: `--save-images` (→ `--save-inline-images`), `--output-dir` (→ `--artifact-dir`). These were deprecated in v2.0.0 and are back as ergonomic aliases for the new artifact pipeline.
+
+### Structure
+- Renamed `tools/openevidence_skill/` → `tools/openevidence_skill_v2/` to reflect the artifact-capture upgrade. Wrapper scripts in `scripts/` now import from the v2 package.
+- New modules: `tools/openevidence_skill_v2/artifacts.py` (capture pipeline) and `tools/openevidence_skill_v2/render.py` (gallery and chatwise rendering).
+
+### Docs
+- SKILL.md rewritten around the new default (`--reliable --format text` with automatic screenshot/figure capture) and the `ACTION REQUIRED` contract for opening the gallery.
+- README updated with the new flags, `chatwise` format, and artifact output locations.
+
+### Upgrading from v2.0.0
+- No code changes required for the common call site — `ask_question.py --question ... --reliable --format text` still works and now also produces artifacts.
+- If you depend on the import path, update `from tools.openevidence_skill` → `from tools.openevidence_skill_v2`.
+- If you run the test suite, the discover path is now `tools/openevidence_skill_v2/tests`.
+
+---
+
 ## [v2.0.0] - 2026-03-15
 
 ### Reliability

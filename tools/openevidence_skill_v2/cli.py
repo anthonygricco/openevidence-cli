@@ -5,12 +5,14 @@ import json
 import sys
 from pathlib import Path
 
+from .artifacts import ArtifactOptions
 from .auth import clear_auth, import_auth_from_helium, perform_setup, print_status, validate_auth
 from .bootstrap import maybe_reexec_into_shared_venv, run_script_from_wrapper
 from .browser import BrowserFactory, load_playwright
 from .config import RuntimeContext, build_runtime_context
 from .parallel import run_parallel_queries
-from .query import QueryOptions, format_text_result, run_query_with_retries
+from .query import QueryOptions, format_chatwise_result, format_text_result, run_query_with_retries
+from .render import DEFAULT_MAX_EMBED_BYTES, RenderOptions
 
 
 DEPRECATED_FLAG_MESSAGES = {
@@ -20,8 +22,6 @@ DEPRECATED_FLAG_MESSAGES = {
     "cache_ttl": "--cache-ttl is deprecated and no longer supported.",
     "timeout": "--timeout is deprecated and no longer supported.",
     "benchmark": "--benchmark is deprecated and no longer supported.",
-    "save_images": "--save-images is deprecated and no longer supported.",
-    "output_dir": "--output-dir is deprecated and no longer supported.",
     "new_chat": "--new-chat is deprecated and no longer supported.",
 }
 
@@ -41,9 +41,23 @@ def _handle_deprecated_query_flags(args: argparse.Namespace) -> int | None:
 def _print_result(result: dict[str, object], output_format: str) -> int:
     if output_format == "json":
         print(json.dumps(result, ensure_ascii=False))
+    elif output_format == "chatwise":
+        render_options = RenderOptions(
+            embed_artifacts=bool(result.get("_render_embed_artifacts")),
+            max_embed_bytes=int(result.get("_render_max_embed_bytes", DEFAULT_MAX_EMBED_BYTES)),
+        )
+        print(format_chatwise_result(result, render_options))
     else:
         print(format_text_result(result))
     return 0 if result.get("ok") else 1
+
+
+def _chatwise_should_embed_artifacts(args: argparse.Namespace) -> bool:
+    if args.embed_artifacts:
+        return True
+    if args.format != "chatwise":
+        return False
+    return bool(args.save_inline_images or args.save_answer_screenshot or args.save_page_screenshot)
 
 
 def main_run(script_file: str, argv: list[str]) -> int:
@@ -115,7 +129,55 @@ def main_ask_question(script_file: str, argv: list[str]) -> int:
     mode_group.add_argument("--reliable", action="store_true", help="Retry turbo -> fast -> normal until one succeeds")
     parser.add_argument("--show-browser", action="store_true", help="Show the browser window for debugging")
     parser.add_argument("--debug", action="store_true", help="Verbose debug logging")
-    parser.add_argument("--format", choices=("json", "text"), default="json", help="Output format")
+    parser.add_argument("--format", choices=("json", "text", "chatwise"), default="json", help="Output format")
+    parser.add_argument(
+        "--save-inline-images",
+        "--save-images",
+        action="store_true",
+        dest="save_inline_images",
+        default=True,
+        help="Save rendered inline images from the final OpenEvidence answer (default: on)",
+    )
+    parser.add_argument(
+        "--no-save-inline-images",
+        action="store_false",
+        dest="save_inline_images",
+        help="Disable saving inline images",
+    )
+    parser.add_argument(
+        "--save-answer-screenshot",
+        action="store_true",
+        default=True,
+        help="Save a screenshot of the final OpenEvidence answer card (default: on)",
+    )
+    parser.add_argument(
+        "--no-save-answer-screenshot",
+        action="store_false",
+        dest="save_answer_screenshot",
+        help="Disable saving answer screenshot",
+    )
+    parser.add_argument(
+        "--save-page-screenshot",
+        action="store_true",
+        help="Save a full-page screenshot after the answer stabilizes",
+    )
+    parser.add_argument(
+        "--artifact-dir",
+        "--output-dir",
+        dest="artifact_dir",
+        help="Directory where v2 artifacts should be written",
+    )
+    parser.add_argument(
+        "--embed-artifacts",
+        action="store_true",
+        help="Embed saved artifact PNGs into chatwise markdown as data URIs when they are small enough",
+    )
+    parser.add_argument(
+        "--max-embed-bytes",
+        type=int,
+        default=DEFAULT_MAX_EMBED_BYTES,
+        help=f"Maximum PNG size in bytes to embed in chatwise output (default: {DEFAULT_MAX_EMBED_BYTES})",
+    )
 
     parser.add_argument("--api", action="store_true", dest="api", help=argparse.SUPPRESS)
     parser.add_argument("--progressive", action="store_true", dest="progressive", help=argparse.SUPPRESS)
@@ -123,8 +185,6 @@ def main_ask_question(script_file: str, argv: list[str]) -> int:
     parser.add_argument("--cache-ttl", type=int, dest="cache_ttl", help=argparse.SUPPRESS)
     parser.add_argument("--timeout", type=int, dest="timeout", help=argparse.SUPPRESS)
     parser.add_argument("--benchmark", action="store_true", dest="benchmark", help=argparse.SUPPRESS)
-    parser.add_argument("--save-images", action="store_true", dest="save_images", help=argparse.SUPPRESS)
-    parser.add_argument("--output-dir", dest="output_dir", help=argparse.SUPPRESS)
     parser.add_argument("--new-chat", action="store_true", dest="new_chat", help=argparse.SUPPRESS)
 
     args = parser.parse_args(argv)
@@ -171,8 +231,21 @@ def main_ask_question(script_file: str, argv: list[str]) -> int:
                 output_format=args.format,
                 show_browser=args.show_browser,
                 debug=args.debug,
+                artifacts=ArtifactOptions(
+                    save_answer_screenshot=args.save_answer_screenshot,
+                    save_page_screenshot=args.save_page_screenshot,
+                    save_inline_images=args.save_inline_images,
+                    artifact_dir=Path(args.artifact_dir).expanduser() if args.artifact_dir else None,
+                ),
+                render=RenderOptions(
+                    embed_artifacts=args.embed_artifacts,
+                    max_embed_bytes=args.max_embed_bytes,
+                ),
             ),
         )
+        if args.format == "chatwise":
+            result["_render_embed_artifacts"] = _chatwise_should_embed_artifacts(args)
+            result["_render_max_embed_bytes"] = args.max_embed_bytes
         results.append(result)
 
     if len(results) == 1:
@@ -195,6 +268,13 @@ def main_parallel_ask(script_file: str, argv: list[str]) -> int:
     parser.add_argument("--reliable", action="store_true", help="Use reliable retry mode")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--show-browser", action="store_true")
+    parser.add_argument("--save-inline-images", "--save-images", action="store_true", dest="save_inline_images")
+    parser.add_argument("--save-answer-screenshot", action="store_true")
+    parser.add_argument("--save-page-screenshot", action="store_true")
+    parser.add_argument("--artifact-dir", "--output-dir", dest="artifact_dir")
+    parser.add_argument("--embed-artifacts", action="store_true")
+    parser.add_argument("--max-embed-bytes", type=int, default=DEFAULT_MAX_EMBED_BYTES)
+    parser.add_argument("--format", choices=("json", "text", "chatwise"), default="json")
     args = parser.parse_args(argv)
 
     questions = list(args.questions)
@@ -224,6 +304,20 @@ def main_parallel_ask(script_file: str, argv: list[str]) -> int:
         extra_flags.append("--debug")
     if args.show_browser:
         extra_flags.append("--show-browser")
+    if args.save_inline_images:
+        extra_flags.append("--save-inline-images")
+    if args.save_answer_screenshot:
+        extra_flags.append("--save-answer-screenshot")
+    if args.save_page_screenshot:
+        extra_flags.append("--save-page-screenshot")
+    if args.artifact_dir:
+        extra_flags.extend(["--artifact-dir", args.artifact_dir])
+    if args.embed_artifacts:
+        extra_flags.append("--embed-artifacts")
+    if args.max_embed_bytes != DEFAULT_MAX_EMBED_BYTES:
+        extra_flags.extend(["--max-embed-bytes", str(args.max_embed_bytes)])
+    if args.format != "json":
+        extra_flags.extend(["--format", args.format])
 
     results = run_parallel_queries(ctx, questions, max_parallel=args.max_parallel, extra_flags=extra_flags)
     print(json.dumps(results, ensure_ascii=False))

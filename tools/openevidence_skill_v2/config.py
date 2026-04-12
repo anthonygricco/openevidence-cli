@@ -41,7 +41,7 @@ def _infer_runtime_id(script_path: Path) -> str:
 def _find_repo_root(script_path: Path) -> Path:
     resolved = script_path.resolve()
     for parent in [resolved.parent] + list(resolved.parents):
-        if (parent / "tools" / "openevidence_skill").is_dir():
+        if (parent / "tools" / "openevidence_skill_v2").is_dir():
             return parent
     raise RuntimeError(f"Could not locate repo root from {script_path}")
 

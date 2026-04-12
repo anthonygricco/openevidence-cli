@@ -1,102 +1,66 @@
 ---
 name: openevidence
-description: Query OpenEvidence for HIPAA-compliant, guideline-backed medical answers. Use when user types /oe or asks for clinical evidence from journals like NEJM, guidelines, or authoritative medical sources.
+description: Query OpenEvidence for evidence-based medical answers with screenshots and inline images automatically captured. Use when the user types /oe or asks for OpenEvidence.
 triggers:
   - /oe
   - openevidence
+  - "open evidence"
   - "check the evidence"
   - "what does OE say"
-  - "evidence for"
 ---
 
 # OpenEvidence Skill
 
-Use OpenEvidence for evidence-backed medical answers when the user explicitly wants OpenEvidence or a guideline/journal-grounded answer.
+Query OpenEvidence and automatically capture answer screenshots and inline images (NCCN flowcharts, Kaplan-Meier curves, trial figures).
 
-## When To Use
-
-- User types `/oe`
-- User explicitly asks for OpenEvidence
-- User wants clinical evidence, guideline language, or source-backed medical synthesis
-
-## Command Rule
-
-Always use the wrapper:
+## Default Command (ALWAYS USE THIS)
 
 ```bash
-python3 <SKILL_DIR>/scripts/run.py auth_manager.py status
-python3 <SKILL_DIR>/scripts/run.py ask_question.py --question "..."
+python3 <SKILL_DIR>/scripts/run.py ask_question.py --question "<QUESTION>" --reliable --format text
 ```
 
-Replace `<SKILL_DIR>` with the installed OpenEvidence skill directory for the current runtime. Do not hard-code `~/.claude/skills` or `~/.codex/skills`.
+Replace `<SKILL_DIR>` with the installed `openevidence` skill directory for the current runtime.
 
-## Supported Commands
+Answer screenshots and inline images are captured automatically — no extra flags needed.
 
-Authentication:
+For programmatic use, `--format json` is also available and returns a structured JSON object with `answer`, `ok`, and `artifacts` fields.
+
+## After the Query Succeeds
+
+The text output has three parts:
+
+1. **Answer text** — between the `OPENEVIDENCE RESPONSE` header and the `Source:` line. Present this verbatim to the user — do not summarize or paraphrase.
+2. **IMAGE ARTIFACTS** — lists file paths to captured inline figure PNGs (NCCN flowcharts, Kaplan-Meier curves, trial figures).
+3. **ACTION REQUIRED** — contains an `open` command to display the figures gallery in the browser.
+
+**You MUST:**
+- Present the answer text verbatim.
+- Run the `open` command shown in the ACTION REQUIRED section to display the HTML gallery of captured figures in the user's browser.
+- If there is no ACTION REQUIRED section (no inline images were captured), just show the answer text.
+
+Do NOT skip the `open` command. The gallery contains NCCN flowcharts, Kaplan-Meier curves, and trial figures that are essential to the answer.
+
+## Authentication
+
+If a query fails with an auth error, run:
 
 ```bash
-python3 <SKILL_DIR>/scripts/run.py auth_manager.py setup
-python3 <SKILL_DIR>/scripts/run.py auth_manager.py status
 python3 <SKILL_DIR>/scripts/run.py auth_manager.py validate
+```
+
+If validation fails:
+
+```bash
 python3 <SKILL_DIR>/scripts/run.py auth_manager.py reauth
-python3 <SKILL_DIR>/scripts/run.py auth_manager.py clear
+```
+
+If already logged into OpenEvidence in Helium:
+
+```bash
 python3 <SKILL_DIR>/scripts/run.py auth_manager.py import-helium
 ```
 
-Queries:
-
-```bash
-python3 <SKILL_DIR>/scripts/run.py ask_question.py --question "..." --reliable --format text
-python3 <SKILL_DIR>/scripts/run.py ask_question.py --question "..." --turbo --format json
-python3 <SKILL_DIR>/scripts/run.py ask_question.py --question "..." --fast --show-browser
-python3 <SKILL_DIR>/scripts/run.py ask_question.py --batch questions.txt --reliable --format json
-python3 <SKILL_DIR>/scripts/parallel_ask.py --file questions.txt --max-parallel 3 --reliable
-python3 <SKILL_DIR>/scripts/run.py browser_launch_smoke_test.py
-```
-
-## Flags
-
-Supported query flags:
-
-- `--question`
-- `--batch`
-- `--turbo`
-- `--fast`
-- `--reliable`
-- `--show-browser`
-- `--debug`
-- `--format json|text`
-
-Unsupported legacy flags such as `--api`, `--progressive`, `--no-cache`, `--cache-ttl`, `--save-images`, and `--timeout` are deprecated and should not be used.
-
-## Recommended Defaults
-
-- Use `--reliable` unless the caller has a strong reason to force one speed mode.
-- Use `--format text` when the answer will be shown directly to the user.
-- Use `--format json` for programmatic consumers.
-- Use `parallel_ask.py` when you need to run multiple OpenEvidence questions in one turn.
-
-## Output Handling
-
-When OpenEvidence returns a successful text response, present the `OPENEVIDENCE RESPONSE` block verbatim.
-
-- Do not summarize the OpenEvidence answer.
-- Do not strip citations or clinically relevant wording.
-- Do not paraphrase recommendations.
-
 ## Shared State
 
-The skill now uses one shared state root across Codex, Claude Code, Alma, and OpenClaw:
-
-- Shared auth and shared venv: `~/.local/share/openevidence-skill/`
-- Runtime-local browser profiles: `~/.local/state/openevidence-skill/profiles/<runtime>/`
-
-This means you authenticate once and the saved session is reused across runtimes, while each runtime gets its own local profile to avoid profile lock conflicts.
-
-## Troubleshooting
-
-- If auth looks stale, run `python3 <SKILL_DIR>/scripts/run.py auth_manager.py validate`
-- If validation fails, run `python3 <SKILL_DIR>/scripts/run.py auth_manager.py reauth`
-- If you are already logged into OpenEvidence in Helium, run `python3 <SKILL_DIR>/scripts/run.py auth_manager.py import-helium`
-- If browser launch fails in a sandboxed app, keep the default bundled Chromium and do not force system Chrome
-- Use `python3 <SKILL_DIR>/scripts/run.py browser_launch_smoke_test.py --show-browser` for a lightweight launch check
+- Shared auth: `~/.local/share/openevidence-skill/`
+- Artifacts: `~/.local/share/openevidence-skill/artifacts/`

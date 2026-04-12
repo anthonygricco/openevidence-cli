@@ -159,7 +159,7 @@ def export_helium_live_cookies(ctx: RuntimeContext) -> list[dict[str, object]]:
             f"Helium is not exposing DevTools metadata at {HELIUM_DEVTOOLS_ACTIVE_PORT}. Leave Helium running and try again."
         )
 
-    script_path = ctx.repo_root / "tools" / "openevidence_skill" / "helium_cdp_export.mjs"
+    script_path = ctx.repo_root / "tools" / "openevidence_skill_v2" / "helium_cdp_export.mjs"
     if not script_path.exists():
         raise RuntimeError(f"Missing Helium export helper: {script_path}")
 
